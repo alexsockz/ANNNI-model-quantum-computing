@@ -15,8 +15,8 @@ config.update("jax_enable_x64", True)
 seed = 123456
 
 # Setting our constants
-num_qubits = 8 # Number of spins in the Hamiltonian (= number of qubits)
-side = 20      # Discretization of the Phase Diagram
+num_qubits = 6 # Number of spins in the Hamiltonian (= number of qubits)
+side = 20     # Discretization of the Phase Diagram
 
 answer = input("noise y or n?").lower().strip()
 if answer == "y":
@@ -88,51 +88,51 @@ for x, k in enumerate(ks):
 # Vectorized diagonalization
 psis = vmap(vmap(diagonalize_H))(H_matrices)
 
-def qcnn_ansatz_noisy(num_qubits, params, noise_strength):
+def qcnn_ansatz_noisy(num_qubits, params):
     """Ansatz of the QCNN model
     Repetitions of the convolutional and pooling blocks
     until only 2 wires are left unmeasured
     """
 
     # Convolution block
-    def conv(wires, params, index, noise_strength):
+    def conv(wires, params, index):
         if len(wires) % 2 == 0:
             groups = wires.reshape(-1, 2)
         else:
             groups = wires[:-1].reshape(-1, 2)
             qml.RY(params[index], wires=int(wires[-1]))
-            if noise_strength:
+            if answer == "y":
                 qml.DepolarizingChannel(noise_strength, wires=int(wires[-1]))
             index += 1
 
         for group in groups:
             qml.CNOT(wires=[int(group[0]), int(group[1])])
-            if noise_strength:
+            if answer == "y":
                 qml.DepolarizingChannel(noise_strength, wires=int(group[0]))
                 qml.DepolarizingChannel(noise_strength, wires=int(group[1]))
             for wire in group:
                 qml.RY(params[index], wires=int(wire))
-                if noise_strength:
+                if answer == "y":
                     qml.DepolarizingChannel(noise_strength, wires=int(wire))
                 index += 1
         return index
 
     # Pooiling block
-    def pool(wires, params, index, noise_strength):
+    def pool(wires, params, index):
         for wire_pool, wire in zip(wires[0::2], wires[1::2]):
             m_0 = qml.measure(int(wire_pool))
             # Nota: dopo una misura non mettiamo rumore perché lo stato è collassato
             qml.cond(m_0 == 0, qml.RX)(params[index], wires=int(wire))
             qml.cond(m_0 == 1, qml.RX)(params[index + 1], wires=int(wire))
             # Dopo le RX condizionali, aggiungiamo rumore sui qubit ancora attivi
-            if noise_strength:
+            if answer == "y":
                 qml.DepolarizingChannel(noise_strength, wires=int(wire))
             index += 2
             wires = np.delete(wires, np.where(wires == wire_pool))
 
         if len(wires) % 2 != 0:
             qml.RX(params[index], wires=int(wires[-1]))
-            if noise_strength:
+            if answer == "y":
                 qml.DepolarizingChannel(noise_strength, wires=int(wires[-1]))
             index += 1
         return index, wires
@@ -144,36 +144,39 @@ def qcnn_ansatz_noisy(num_qubits, params, noise_strength):
     # Initial layer: apply RY to all wires.
     for wire in active_wires:
         qml.RY(params[index], wires=int(wire))
-        if noise_strength:
+        if answer == "y":
             qml.DepolarizingChannel(noise_strength, wires=int(wire))
         index += 1
 
     # Repeatedly apply convolution and pooling until there are 2 unmeasured wires
     while len(active_wires) > 2:
-        index = conv(active_wires, params, index, noise_strength)
-        index, active_wires = pool(active_wires, params, index, noise_strength)
+        index = conv(active_wires, params, index)
+        index, active_wires = pool(active_wires, params, index)
         qml.Barrier()
 
     # Final layer: apply RY to the remaining active wires.
     for wire in active_wires:
         qml.RY(params[index], wires=int(wire))
-        if noise_strength:
+        if answer == "y":
             qml.DepolarizingChannel(noise_strength, wires=int(wire))
         index += 1
     return index, active_wires
 
-num_params, output_wires = qcnn_ansatz_noisy(num_qubits, [0]*100, noise_strength)
+num_params, output_wires = qcnn_ansatz_noisy(num_qubits, [0]*100)
 
+if answer == "y":
+    dev = qml.device("default.mixed", wires=num_qubits)
+elif answer == "n":
+    dev = qml.device("default.qubit", wires=num_qubits)
 
-@qml.qnode(qml.device("default.mixed", wires=num_qubits))
+@qml.qnode(dev)
 def qcnn_noisy(params, state):
     qml.StatePrep(state, wires=range(num_qubits), normalize=True)
-    _, output_wires = qcnn_ansatz_noisy(num_qubits, params, noise_strength)
+    _, output_wires = qcnn_ansatz_noisy(num_qubits, params)
     return qml.probs([int(k) for k in output_wires])
 
 # Vectorized circuit through vmap
 vectorized_qcnn_noisy = vmap(jit(qcnn_noisy), in_axes=(None, 0))
-
 
 def cross_entropy(pred, Y, T):
     """Multi-class cross entropy loss function"""
