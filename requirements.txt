@@ -1,0 +1,7 @@
+pennylane
+jax
+optax
+matplotlib
+torch
+pennylane-lightning-gpu
+optuna
