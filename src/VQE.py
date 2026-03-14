@@ -19,6 +19,7 @@ class VQE:
         self.k = k
         self.h = h
         self.j = j
+        self.early_stopping_patience=30
         self.shots = 1000
         self.parameters_vqe = nn.Parameter(torch.rand((self.m, self.n)) * 2 * np.pi, requires_grad=True)
 
@@ -37,6 +38,11 @@ class VQE:
             return qml.probs(wires=range(self.n))
 
         optimizer = torch.optim.Adam([self.parameters_vqe], lr=learning_rate, weight_decay=0)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=5, factor=0.8)
+
+        best_energy = float('inf')
+        best_params = self.parameters_vqe.detach().clone()
+        patience_counter=0
 
         for epoch in range(epochs):
             optimizer.zero_grad()
@@ -50,13 +56,31 @@ class VQE:
             
             energy.backward()
             optimizer.step()
-
+            scheduler.step(energy)
             with torch.no_grad():
                 self.parameters_vqe.copy_(torch.remainder(self.parameters_vqe, 2 * np.pi))
+
+            energy_val = energy.item()
             
+            if energy_val < best_energy:
+                best_energy = energy_val
+                # Usiamo .clone() per evitare che i parametri salvati cambino 
+                # quando l'ottimizzatore aggiorna quelli attuali
+                best_params = self.parameters_vqe.detach().clone()
+                print(f"Nuovo minimo trovato all'epoca {epoch}: {best_energy:.6f}")
+                patience_counter = 0 # Reset del counter perché abbiamo migliorato
+            else:
+                patience_counter += 1
+
+            if patience_counter >= self.early_stopping_patience:
+                print(f"\n--- Early Stopping all'epoca {epoch} ---")
+                break
+
             if epoch % 10 == 0:
                 print(f"Epoch {epoch}: Energy = {energy.item():.6f}")
-        return energy.item()
+        with torch.no_grad():
+            self.parameters_vqe.copy_(best_params)
+        return best_energy
 
     def compute_energy_from_probs(self, probs_z, probs_x):
         """
@@ -100,11 +124,11 @@ class VQE:
 
 if __name__ == "__main__":
     from time import perf_counter
-
+    print("start")
     t1 = perf_counter()
     # Note: For 2 qubits, next-nearest neighbor (k) doesn't exist, which is fine.
     vqe = VQE(n_wires=4, n_layers=2, k=0.2, h=0.5)  
-    energy = vqe.train_VQE(epochs=200, learning_rate=0.05)  
+    energy = vqe.train_VQE(epochs=300, learning_rate=0.05)  
     
     print(f"\nFinal Ground State Energy: {energy:.6f}")
     print(f"Total time: {perf_counter() - t1:.2f}s")
