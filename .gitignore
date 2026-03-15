@@ -1,3 +1,4 @@
 !./src
 !./papers
 venv
+*.ipynb_checkpoints/
