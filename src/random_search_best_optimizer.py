@@ -1,35 +1,65 @@
+import os
+import warnings
+# Suppress JAX and numerical warnings
+warnings.filterwarnings('ignore', category=RuntimeWarning)
+os.environ["JAX_QUIET_STARTUP"] = "1"
+# Disable CUDA entirely to avoid CuDNN version mismatch error
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
+os.environ["JAX_PLATFORM_NAME"] = "cpu"
+
 from VQE import VQE
 import torch
 from time import perf_counter
 import numpy as np
 import optuna
 import optuna.visualization as vis
-import os
 from tqdm import tqdm
 
+from jax import numpy as jnp
+from jax import vmap
+import pennylane as qml
 os.environ["OMP_NUM_THREADS"] = "1"
 torch.set_num_threads(1)
-
+n_qubits=6
+theoretical_energy=1
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+def get_H(num_spins, k, h):
+    """Construction function for the ANNNI Hamiltonian (J=1)"""
+    # Interaction between spins (neighbouring):
+    H = -1 * (qml.PauliX(0) @ qml.PauliX(1))
+    for i in range(1, num_spins - 1):
+        H = H - (qml.PauliX(i) @ qml.PauliX(i + 1))
+
+    # Interaction between spins (next-neighbouring):
+    for i in range(0, num_spins - 2):
+        H = H + k * (qml.PauliX(i) @ qml.PauliX(i + 2))
+
+    # Interaction of the spins with the magnetic field
+    for i in range(0, num_spins):
+        H = H - h * qml.PauliZ(i)
+
+    return H
 
 def run_trial(trial):
     #paper says 6/12
     #n_qubits = trial.suggest_categorical("n_qubits", [4, 6, 8, 12])
-    n_qubits=6
-    ansatz_depth = trial.suggest_int("ansatz_depth", 2, 9)
+   
+    ansatz_depth = trial.suggest_int("ansatz_depth", 5, 9)
     
     #n_shots = trial.suggest_categorical("n_shots", [100, 1000, 10000])
+    #SETTING IT TO NONE FOR TIME IT WOULD BE MORE CORRECT TO HAVE IT WITH SET NUMBER OF SHOTS
     n_shots=1000
     
     # Suggesting from a range is often better than a fixed list
-    learning_rate = trial.suggest_float("learning_rate", 1e-3, 1e-1, log=True)
+    learning_rate = trial.suggest_float("learning_rate", 1e-2, 6e-1, log=True)
     schedule_factor = trial.suggest_float("schedule_factor", 0.1, 0.9)
-    schedule_patience = trial.suggest_int("schedule_patience", 3, 10)
-    optimizer_choice = trial.suggest_categorical("optimizer", ["ASDG", "Adam"])
-    init_type = trial.suggest_categorical("init_type", ["random", "zeros", "pi", "small_random"])
+    schedule_patience = trial.suggest_int("schedule_patience", 2, 10)
+    #optimizer_choice = trial.suggest_categorical("optimizer", ["ASDG", "Adam"])
+    init_type = trial.suggest_categorical("init_type", ["random", "zeros", "small_random"])
 
-    n_repeat = 10 # Repeat to calculate variance
+    n_repeat = 12 # Set to 1 for speed, increase for more robust statistics
     energies = []
     epochs_list = []
 
@@ -45,7 +75,7 @@ def run_trial(trial):
                                 learning_rate = learning_rate,
                                 scheduler_patience = schedule_patience,
                                 scheduler_factor = schedule_factor,
-                                optimizer_choice = optimizer_choice,
+                                optimizer_choice = "Adam",
                                 with_scheduler = True)  
         energies.append(best_energy)
         epochs_list.append(best_epoch)
@@ -55,11 +85,26 @@ def run_trial(trial):
     mean_epoch = np.mean(epochs_list)
     std_energy = np.std(energies)
 
-    return float(mean_energy), float(mean_epoch), float(std_energy)
+    # Error calculation - skip if theoretical_energy is invalid
+    try:
+        error_perc = float(abs((mean_energy - theoretical_energy) / theoretical_energy))
+        if np.isnan(error_perc) or np.isinf(error_perc):
+            error_perc = -1  # Flag invalid value
+    except (ZeroDivisionError, TypeError, ValueError):
+        error_perc = -1  # Flag invalid value
+    
+
+    return float(mean_energy), float(mean_epoch), float(std_energy), error_perc
+
+def diagonalize_H(H_matrix):
+    """Returns the lowest eigenvector of the Hamiltonian matrix."""
+    _, psi = jnp.linalg.eigh(H_matrix)  # Compute eigenvalues and eigenvectors
+    return jnp.array(psi[:, 0], dtype=jnp.complex64)  # Return the ground state
+
 
 if __name__ == "__main__":
 
-    n_trials=7
+    n_trials=6
     pbar = tqdm(total=n_trials, desc="Optimizing VQE") # Match total to n_trials
     torch.manual_seed(42)    
 
@@ -80,8 +125,25 @@ if __name__ == "__main__":
     storage_url = "sqlite:///vqe_results.db?timeout=60" # Added timeout
 
     
-
     t1 = perf_counter()
+
+    ks = [0.2]
+    hs = [0.5]
+
+    # Preallocate arrays for Hamiltonian matrices and phase labels.
+    H_matrices = np.empty((len(ks), len(hs), 2**n_qubits, 2**n_qubits))
+    
+    # Fill H_matrices with actual Hamiltonian matrices
+    for x, k in enumerate(ks):
+        for y, h in enumerate(hs):
+            H_matrices[y, x] = np.real(qml.matrix(get_H(n_qubits, k, h)))
+    
+    # Vectorized diagonalization
+    psis = vmap(vmap(diagonalize_H))(H_matrices)
+    theoretical_energy = jnp.real(jnp.dot(psis[0,0].conj().T, jnp.dot(H_matrices[0,0], psis[0,0])))
+    print(theoretical_energy)
+    
+
 # 1. PRE-INIT DATABASE SETTINGS
     import sqlite3
     with sqlite3.connect("vqe_results.db") as conn:
@@ -91,9 +153,9 @@ if __name__ == "__main__":
 
     # 2. CREATE STUDY
     study = optuna.create_study(
-        study_name="vqe_search_v4",
+        study_name="vqe_search_v4_with_percent",
         storage=storage_url,
-        directions=["minimize", "minimize", "minimize"],
+        directions=["minimize", "minimize", "minimize", "minimize"],
         pruner=optuna.pruners.MedianPruner(),
         load_if_exists=True
     )
