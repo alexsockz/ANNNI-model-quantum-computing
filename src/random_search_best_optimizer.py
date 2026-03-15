@@ -5,6 +5,7 @@ import numpy as np
 import optuna
 import optuna.visualization as vis
 import os
+from tqdm import tqdm
 
 os.environ["OMP_NUM_THREADS"] = "1"
 torch.set_num_threads(1)
@@ -13,7 +14,6 @@ torch.set_num_threads(1)
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 def run_trial(trial):
-        
     #paper says 6/12
     #n_qubits = trial.suggest_categorical("n_qubits", [4, 6, 8, 12])
     n_qubits=6
@@ -46,8 +46,7 @@ def run_trial(trial):
                                 scheduler_patience = schedule_patience,
                                 scheduler_factor = schedule_factor,
                                 optimizer_choice = optimizer_choice,
-                                with_scheduler = True,
-                                optuna_trial=trial)  
+                                with_scheduler = True)  
         energies.append(best_energy)
         epochs_list.append(best_epoch)
 
@@ -59,33 +58,52 @@ def run_trial(trial):
     return float(mean_energy), float(mean_epoch), float(std_energy)
 
 if __name__ == "__main__":
+
+    n_trials=7
+    pbar = tqdm(total=n_trials, desc="Optimizing VQE") # Match total to n_trials
     torch.manual_seed(42)    
 
-    list_n_qubits=[4, 6, 8, 12]
-    list_ansatz_depth=[2, 4, 6, 9] # paper says 6(9)
-    list_n_shots=[100, 1000, 10000]
-    list_param_init=[None,0,np.pi]
-    list_schedule_patience=[3,5,7,10]
-    list_schedule_factor=[0.1,0.3,0.5,0.7,0.8,0.9]
-    list_learning_rate=[0.001, 0.01, 0.05, 0.07, 0.1]
-    list_optimizers=["ASGD", "Adam"]
+    # list_n_qubits=[4, 6, 8, 12]
+    # list_ansatz_depth=[2, 4, 6, 9] # paper says 6(9)
+    # list_n_shots=[100, 1000, 10000]
+    # list_param_init=[None,0,np.pi]
+    # list_schedule_patience=[3,5,7,10]
+    # list_schedule_factor=[0.1,0.3,0.5,0.7,0.8,0.9]
+    # list_learning_rate=[0.001, 0.01, 0.05, 0.07, 0.1]
+    # list_optimizers=["ASGD", "Adam"]
 
     #train_VQE( epochs=100, learning_rate=0.01, scheduler_patience=5, scheduler_factor=0.8, optimizer_choice="Adam", with_scheduler=True)
-    print("start")
+
+    def update_pbar(study, trial):
+        pbar.update(1)
+
+    storage_url = "sqlite:///vqe_results.db?timeout=60" # Added timeout
+
+    
+
     t1 = perf_counter()
+# 1. PRE-INIT DATABASE SETTINGS
+    import sqlite3
+    with sqlite3.connect("vqe_results.db") as conn:
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=NORMAL;")
+        conn.execute("PRAGMA busy_timeout=60000;") # 60 seconds
 
-    storage_url = "sqlite:///vqe_results.db"
-
+    # 2. CREATE STUDY
     study = optuna.create_study(
-        study_name="vqe_search",
+        study_name="vqe_search_v4",
         storage=storage_url,
-        # Update directions to handle 3 objectives: Energy Mean, Epochs Mean, Energy Std Dev
-        directions=["minimize", "minimize", "minimize"], 
-        pruner=optuna.pruners.MedianPruner(), 
+        directions=["minimize", "minimize", "minimize"],
+        pruner=optuna.pruners.MedianPruner(),
         load_if_exists=True
     )
 
-    study.optimize(run_trial, n_trials=50, n_jobs=1) # parallelization through for i in {1..8}; do python src/random_search_best_optimizer.py & done; wait
+    # 3. OPTIMIZE WITH LIMITED JOBS
+    # PennyLane queueing is NOT fully thread-safe. Use n_jobs=1 and parallelize via bash:
+    # for i in {1..8}; do python src/random_search_best_optimizer.py & done; wait
+    study.optimize(run_trial, n_trials=n_trials, n_jobs=1, callbacks=[update_pbar])
+
+    pbar.close()
 
     print(f"Total time: {perf_counter() - t1:.2f}s")
 

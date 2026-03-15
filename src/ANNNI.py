@@ -62,6 +62,7 @@ def diagonalize_H(H_matrix):
     _, psi = jnp.linalg.eigh(H_matrix)  # Compute eigenvalues and eigenvectors
     return jnp.array(psi[:, 0], dtype=jnp.complex64)  # Return the ground state
 
+
 # Create meshgrid of the parameter space
 ks = np.linspace(0, 1, side)
 hs = np.linspace(0, 2, side)
@@ -70,6 +71,21 @@ K, H = np.meshgrid(ks, hs)
 # Preallocate arrays for Hamiltonian matrices and phase labels.
 H_matrices = np.empty((len(ks), len(hs), 2**num_qubits, 2**num_qubits))
 phases = np.empty((len(ks), len(hs)), dtype=int)
+
+# Extract the eigenvalues for the first configuration (k=0, h=0)
+eigenvalues, _ = jnp.linalg.eigh(H_matrices[0, 0])
+ground_state_energy = eigenvalues[0]
+
+print(f"Ground state energy for k={ks[0]:.2f}, h={hs[0]:.2f}: {ground_state_energy:.4f}")
+
+def get_energy(H_matrix):
+    eigenvalues, _ = jnp.linalg.eigh(H_matrix)
+    return eigenvalues[0]
+
+# Calculate all ground state energies across the k, h grid
+energies = vmap(vmap(get_energy))(H_matrices)
+print(f"All ground state energies shape: {energies.shape}")
+print(f"Energy at k={ks[0]:.2f}, h={hs[0]:.2f}: {energies[0, 0]:.4f}")
 
 for x, k in enumerate(ks):
     for y, h in enumerate(hs):

@@ -13,17 +13,23 @@ class VQE:
         self.j = j
         self.early_stopping_patience = patience
         self.shots = shots
+        
+        # 1. Device Selection (Shots are set here globally)
         if n_wires < 20:
             self.dev = qml.device("lightning.qubit", wires=self.n)
-        elif n_wires >= 20:
+        else:
             try:
-                # Try to instantiate GPU device, fallback if not available
                 self.dev = qml.device("lightning.gpu", wires=self.n)
-            except Exception as _:
-                print("GPU device not available, falling back to lightning.qubit.")
+            except Exception:
                 self.dev = qml.device("lightning.qubit", wires=self.n)
         
-        #"random", "zeros", "pi", "small_random"
+        # 2. Setup the QNode ONCE during init
+        # Using adjoint for lightning is much faster if shots=None, 
+        # but for finite shots, parameter-shift is correct.
+        self.qnode = qml.QNode(self.circuit, self.dev, interface="torch", diff_method="parameter-shift")
+        self.qnode._set_shots(self.shots)
+
+        # 3. Param Init
         if param_init=="random":
             self.parameters_vqe = nn.Parameter(rand((self.m, self.n)) * 2 * np.pi, requires_grad=True)
         elif param_init=="zeros":
@@ -35,78 +41,71 @@ class VQE:
     
     # Using 'probs' is often more stable for gradients than 'counts', 
     # but it represents the exact same hardware reality (sampling).    
-    def circuit(self,params, basis="Z"):
+    def circuit(self, params, basis="Z"):
+        # The ansatz must be purely gate operations
         self.ansatz(params)
+        
+        # Rotation for X basis must happen BEFORE the return
         if basis == "X":
-            for i in range(self.n): qml.Hadamard(wires=i)
-        # return qml.probs() gives a tensor of shape (2^n,)
-        # This is functionally identical to counts/shots
-        return qml.probs(wires=range(self.n))
+            for i in range(self.n): 
+                qml.Hadamard(wires=i)
+        
+        # In Pennylane, all ops (ansatz + basis change) must be queued BEFORE measurements
+        return qml.probs(wires=range(self.n))        
         
     def train_VQE(self, epochs=100, learning_rate=0.01, scheduler_patience=5, scheduler_factor=0.8, optimizer_choice="Adam", with_scheduler=True, optuna_trial=None):
         
-        circuit_qnode = qml.QNode(self.circuit, self.dev, interface="torch", diff_method="parameter-shift")
-        circuit_qnode._set_shots(self.shots)
         best_energy = float('inf')
         best_params = self.parameters_vqe.detach().clone()
-        patience_counter=0
-        best_epoch=epochs
-        last_epoch=epochs
+        patience_counter = 0
+        best_epoch = epochs
+        last_epoch = epochs
 
-        energy_history=[]
-        lr_history=[]
+        energy_history = []
+        lr_history = []
 
-        scheduler_decision = with_scheduler==True and optimizer_choice!="ASDG"
+        # Fix the typo check: ASGD
+        scheduler_decision = with_scheduler and optimizer_choice != "ASGD"
 
-        if optimizer_choice=="ASGD":
-            optimizer= optim.ASGD([self.parameters_vqe], lr=learning_rate, weight_decay=0)
+        if optimizer_choice == "ASGD":
+            optimizer = optim.ASGD([self.parameters_vqe], lr=learning_rate)
         else:
-            optimizer = optim.Adam([self.parameters_vqe], lr=learning_rate, weight_decay=0)
+            optimizer = optim.Adam([self.parameters_vqe], lr=learning_rate)
         
-        #dummy scheduler definition, just placeholder because it can't be None
-        scheduler=optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=1000, factor=0.99)
-        
-        if scheduler_decision: #add optimizers that shouldn't have lr optimization
-            scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=scheduler_patience, factor=scheduler_factor)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', 
+                                                         patience=scheduler_patience if scheduler_decision else 1000, 
+                                                         factor=scheduler_factor if scheduler_decision else 1.0)
 
         for epoch in range(epochs):
             optimizer.zero_grad()
             
-            # 1. Get probabilities (the "normalized counts")
-            probs_z = circuit_qnode(self.parameters_vqe, basis="Z")
-            probs_x = circuit_qnode(self.parameters_vqe, basis="X")
+            # Use the pre-initialized qnode
+            probs_z = self.qnode(self.parameters_vqe, basis="Z")
+            probs_x = self.qnode(self.parameters_vqe, basis="X")
             
-            # 2. Compute energy using ONLY Torch ops
             energy = self.compute_energy_from_probs(probs_z, probs_x)            
-
             energy_val = energy.item()
-            current_lr = optimizer.param_groups[0]['lr']
             
+            # # --- Optuna Reporting & Pruning ---
+            # if optuna_trial is not None:
+            #     optuna_trial.report(energy_val, step=epoch)
+            #     if optuna_trial.should_prune():
+            #         raise optuna.exceptions.TrialPruned()
+
             if energy_val < best_energy:
                 best_energy = energy_val
                 best_params = self.parameters_vqe.detach().clone()
-
-                #print(f"Nuovo minimo trovato all'epoca {epoch}: {best_energy:.6f}")
-                
-                patience_counter = 0 # Reset del counter perché abbiamo migliorato
-                best_epoch=epoch
+                patience_counter = 0
+                best_epoch = epoch
             else:
                 patience_counter += 1
 
             if patience_counter >= self.early_stopping_patience:
-                #print(f"\n--- Early Stopping all'epoca {epoch} ---")
                 last_epoch=epoch
                 break
-            # if epoch % 10 == 0:
-            #     print(f"Epoch {epoch}: Energy = {energy.item():.6f}")
             
             energy_history.append(energy_val)
-            lr_history.append(current_lr)
-
-            # if optuna_trial!=None:
-            #     optuna_trial.report(energy_val, step=epoch)
-            #     if optuna_trial.should_prune():
-            #         raise optuna_trial.exceptions.TrialPruned()
+            lr_history.append(optimizer.param_groups[0]['lr'])
 
             energy.backward()
             optimizer.step()
@@ -115,6 +114,7 @@ class VQE:
                 scheduler.step(energy_val)
 
             with no_grad():
+                # Keep parameters in [0, 2pi]
                 self.parameters_vqe.copy_(remainder(self.parameters_vqe, 2 * np.pi))
 
         with no_grad():
