@@ -159,6 +159,9 @@ if __name__ == "__main__":
         pruner=optuna.pruners.MedianPruner(),
         load_if_exists=True
     )
+    
+    # Set custom names for objectives
+    study.set_metric_names(["Energy Mean", "Epochs Mean", "Energy Std", "Error %"])
 
     # 3. OPTIMIZE WITH LIMITED JOBS
     # PennyLane queueing is NOT fully thread-safe. Use n_jobs=1 and parallelize via bash:
