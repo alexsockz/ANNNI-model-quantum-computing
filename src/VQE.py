@@ -15,7 +15,7 @@ class VQE:
         self.shots = shots
         
         # 1. Device Selection (Shots are set here globally)
-        if n_wires < 20:
+        if n_wires < 15:
             self.dev = qml.device("lightning.qubit", wires=self.n)
         else:
             try:
@@ -26,7 +26,7 @@ class VQE:
         # 2. Setup the QNode ONCE during init
         # Using adjoint for lightning is much faster if shots=None, 
         # but for finite shots, parameter-shift is correct.
-        self.qnode = qml.QNode(self.circuit, self.dev, interface="torch", diff_method="parameter-shift")
+        self.qnode = qml.QNode(self._train_circuit, self.dev, interface="torch", diff_method="parameter-shift")
         self.qnode._set_shots(self.shots)
 
         # 3. Param Init
@@ -41,7 +41,7 @@ class VQE:
     
     # Using 'probs' is often more stable for gradients than 'counts', 
     # but it represents the exact same hardware reality (sampling).    
-    def circuit(self, params, basis="Z"):
+    def _train_circuit(self, params, basis="Z"):
         # The ansatz must be purely gate operations
         self.ansatz(params)
         
@@ -68,9 +68,9 @@ class VQE:
         scheduler_decision = with_scheduler and optimizer_choice != "ASGD"
 
         if optimizer_choice == "ASGD":
-            optimizer = optim.ASGD([self.parameters_vqe], lr=learning_rate)
+            optimizer = optim.ASGD([self.parameters_vqe], lr=learning_rate, weight_decay=0)
         else:
-            optimizer = optim.Adam([self.parameters_vqe], lr=learning_rate)
+            optimizer = optim.Adam([self.parameters_vqe], lr=learning_rate, weight_decay=0)
         
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', 
                                                          patience=scheduler_patience if scheduler_decision else 1000, 
@@ -83,7 +83,7 @@ class VQE:
             probs_z = self.qnode(self.parameters_vqe, basis="Z")
             probs_x = self.qnode(self.parameters_vqe, basis="X")
             
-            energy = self.compute_energy_from_probs(probs_z, probs_x)            
+            energy = self._compute_energy_from_probs(probs_z, probs_x)            
             energy_val = energy.item()
             
             # # --- Optuna Reporting & Pruning ---
@@ -122,7 +122,7 @@ class VQE:
 
         return best_energy, best_epoch, last_epoch, energy_history, lr_history
 
-    def compute_energy_from_probs(self, probs_z, probs_x):
+    def _compute_energy_from_probs(self, probs_z, probs_x):
         """
         Calculates expectation values from the probability tensor.
         This replaces your counts_to_expectation loop.
