@@ -16,7 +16,7 @@ config.update("jax_enable_x64", True)
 seed = 123456
 
 # Setting our constants
-num_qubits = 6 # Number of spins in the Hamiltonian (= number of qubits)
+num_qubits = 8 # Number of spins in the Hamiltonian (= number of qubits)
 side = 20     # Discretization of the Phase Diagram
 
 answer = input("noise y or n?").lower().strip()
@@ -93,128 +93,148 @@ if answer == "y":
     limite = 100
 elif answer == "n":
     limite = 1
-qprobs = np.zeros(limite)
 
-def qcnn_ansatz_noisy(num_qubits, params):
+
+vec_rand = np.zeros(limite)
+def qcnn_ansatz_noisy(num_qubits, params, r):
     """Ansatz of the QCNN model
     Repetitions of the convolutional and pooling blocks
     until only 2 wires are left unmeasured
     """
-    for i in range(limite):
-        index = 0
-        wires = range(num_qubits)
-        paramis = params
-        # Convolution block
-        def conv(wires, paramis, index):
-            if len(wires) % 2 == 0:
-                groups = wires.reshape(-1, 2)
-            else:
-                groups = wires[:-1].reshape(-1, 2)
-                qml.RY(paramis[index], wires=int(wires[-1]))
-                if answer == "y":
-                    r = random.random()
-                    if r < noise_strength / 3:
-                        X(wires=int(wires[-1]))
-                    elif noise_strength / 3 < r < 2 * noise_strength / 3:
-                        Y(wires=int(wires[-1]))
-                    elif 2 * noise_strength / 3 < r < 3 * noise_strength / 3:
-                        Z(wires=int(wires[-1]))
-                index += 1
-
-            for group in groups:
-                qml.CNOT(wires=[int(group[0]), int(group[1])])
-                if answer == "y":
-                    r = random.random()
-                    if r < noise_strength / 3:
-                        X(wires=int(group[0]))
-                    elif noise_strength / 3 < r < 2 * noise_strength / 3:
-                        Y(wires=int(group[0]))
-                    elif 2 * noise_strength / 3 < r < 3 * noise_strength / 3:
-                        Z(wires=int(group[0]))
-                    r = random.random()
-                    if r < noise_strength / 3:
-                        X(wires=int(group[1]))
-                    elif noise_strength / 3 < r < 2 * noise_strength / 3:
-                        Y(wires=int(group[1]))
-                    elif 2 * noise_strength / 3 < r < 3 * noise_strength / 3:
-                        Z(wires=int(group[1]))
-                for wire in group:
-                    qml.RY(paramis[index], wires=int(wire))
-                    if answer == "y":
-                        r = random.random()
-                        if r < noise_strength / 3:
-                            X(wires=int(wire))
-                        elif noise_strength / 3 < r < 2 * noise_strength / 3:
-                            Y(wires=int(wire))
-                        elif 2 * noise_strength / 3 < r < 3 * noise_strength / 3:
-                            Z(wires=int(wire))
-                    index += 1
-            return index
-
-        # Pooiling block
-        def pool(wires, paramis, index):
-            for wire_pool, wire in zip(wires[0::2], wires[1::2]):
-                m_0 = qml.measure(int(wire_pool))
-                # Nota: dopo una misura non mettiamo rumore perché lo stato è collassato
-                qml.cond(m_0 == 0, qml.RX)(paramis[index], wires=int(wire))
-                qml.cond(m_0 == 1, qml.RX)(paramis[index + 1], wires=int(wire))
-                # Dopo le RX condizionali, aggiungiamo rumore sui qubit ancora attivi
-                if answer == "y":
-                    qml.DepolarizingChannel(noise_strength, wires=int(wire))
-                index += 2
-                wires = np.delete(wires, np.where(wires == wire_pool))
-
-            if len(wires) % 2 != 0:
-                qml.RX(paramis[index], wires=int(wires[-1]))
-                if answer == "y":
-                    qml.DepolarizingChannel(noise_strength, wires=int(wires[-1]))
-                index += 1
-            return index, wires
-
-        # Initialize active wires and parameter index.
-        active_wires = np.arange(num_qubits)
-        index = 0
-
-        # Initial layer: apply RY to all wires.
-        for wire in active_wires:
-            qml.RY(paramis[index], wires=int(wire))
+    wires = range(num_qubits)
+    # Convolution block
+    def conv(wires, params, index, pos, r):
+        if len(wires) % 2 == 0:
+            groups = wires.reshape(-1, 2)
+        else:
+            groups = wires[:-1].reshape(-1, 2)
+            qml.RY(params[index], wires=int(wires[-1]))
             if answer == "y":
-                qml.DepolarizingChannel(noise_strength, wires=int(wire))
+                if r[pos] < noise_strength / 3:
+                    X(wires=int(wires[-1]))
+                elif noise_strength / 3 < r[pos] < 2 * noise_strength / 3:
+                    Y(wires=int(wires[-1]))
+                elif 2 * noise_strength / 3 < r[pos] < 3 * noise_strength / 3:
+                    Z(wires=int(wires[-1]))
+            pos += 1
             index += 1
 
-        # Repeatedly apply convolution and pooling until there are 2 unmeasured wires
-        while len(active_wires) > 2:
-            index = conv(active_wires, paramis, index)
-            index, active_wires = pool(active_wires, paramis, index)
-            qml.Barrier()
-
-        # Final layer: apply RY to the remaining active wires.
-        for wire in active_wires:
-            qml.RY(paramis[index], wires=int(wire))
-            if answer == "y":
-                qml.DepolarizingChannel(noise_strength, wires=int(wire))
+        for group in groups:
+            qml.CNOT(wires=[int(group[0]), int(group[1])])
             index += 1
+        for wire in active_wires:
+                if answer == "y":
+                    if r[pos] < noise_strength / 3:
+                        X(wires=int(wire))
+                    elif noise_strength / 3 < r[pos] < 2 * noise_strength / 3:
+                        Y(wires=int(wire))
+                    elif 2 * noise_strength / 3 < r[pos] < 3 * noise_strength / 3:
+                        Z(wires=int(wire))
+                pos += 1
+        for wire in active_wires:
+            qml.RY(params[index], wires=int(wire))
+            if answer == "y":
+                if r[pos] < noise_strength / 3:
+                    X(wires=int(wire))
+                elif noise_strength / 3 < r[pos] < 2 * noise_strength / 3:
+                    Y(wires=int(wire))
+                elif 2 * noise_strength / 3 < r[pos] < 3 * noise_strength / 3:
+                    Z(wires=int(wire))
+            pos += 1
+            index += 1
+        return index
 
-        v_index[i] = index
-        v_active_wires[i] = active_wires
-        qprobs[i] = qml.probs([int(k) for k in active_wires])
-    index = np.sum(v_index) / limite
-    q_distribuz = np.zeros(int(4))
-    q_distribuz = np.sum(qprobs, axis=0) / limite
-    return index, q_distribuz
+    # Pooiling block
+    def pool(wires, params, index, pos, r):
+        for wire_pool, wire in zip(wires[0::2], wires[1::2]):
+            m_0 = qml.measure(int(wire_pool))
+            # Nota: dopo una misura non mettiamo rumore perché lo stato è collassato
+            qml.cond(m_0 == 0, qml.RX)(params[index], wires=int(wire))
+            # Dopo le RX condizionali, aggiungiamo rumore sui qubit ancora attivi
+            if answer == "y":
+                if r[pos] < noise_strength / 3:
+                    qml.cond(m_0 == 0, X)(wires=int(wire))
+                elif noise_strength / 3 < r[pos] < 2 * noise_strength / 3:
+                    qml.cond(m_0 == 0, Y)(wires=int(wire))
+                elif 2 * noise_strength / 3 < r[pos] < 3 * noise_strength / 3:
+                    qml.cond(m_0 == 0, Z)(wires=int(wire))
+            pos += 1
+            qml.cond(m_0 == 1, qml.RX)(params[index + 1], wires=int(wire))
+            # Dopo le RX condizionali, aggiungiamo rumore sui qubit ancora attivi
+            if answer == "y":
+                if r[pos] < noise_strength / 3:
+                    qml.cond(m_0 == 1, X)(wires=int(wire))
+                elif noise_strength / 3 < r[pos] < 2 * noise_strength / 3:
+                    qml.cond(m_0 == 1, Y)(wires=int(wire))
+                elif 2 * noise_strength / 3 < r[pos] < 3 * noise_strength / 3:
+                    qml.cond(m_0 == 1, Z)(wires=int(wire))
+            pos += 1
+            index += 2
+            wires = np.delete(wires, np.where(wires == wire_pool))
 
-num_params, p_distr = qcnn_ansatz_noisy(num_qubits, [0] * 100)
+        if len(wires) % 2 != 0:
+            qml.RX(params[index], wires=int(wires[-1]))
+            if answer == "y":
+                if r[pos] < noise_strength / 3:
+                    X(wires=int(wires[-1]))
+                elif noise_strength / 3 < r[pos] < 2 * noise_strength / 3:
+                    Y(wires=int(wires[-1]))
+                elif 2 * noise_strength / 3 < r[pos] < 3 * noise_strength / 3:
+                    Z(wires=int(wires[-1]))
+            pos += 1
+            index += 1
+        return index, wires
+
+    # Initialize active wires and parameter index.
+    active_wires = np.arange(num_qubits)
+    index = 0
+    pos = 0
+
+    # Initial layer: apply RY to all wires.
+    for wire in active_wires:
+        qml.RY(params[index], wires=int(wire))
+        if answer == "y":
+            if r[pos] < noise_strength / 3:
+                X(wires=int(wire))
+            elif noise_strength / 3 < r[pos] < 2 * noise_strength / 3:
+                Y(wires=int(wire))
+            elif 2 * noise_strength / 3 < r[pos] < 3 * noise_strength / 3:
+                Z(wires=int(wire))
+        pos += 1
+        index += 1
+
+    # Repeatedly apply convolution and pooling until there are 2 unmeasured wires
+    while len(active_wires) > 2:
+        index = conv(active_wires, params, index, pos, r)
+        index, active_wires = pool(active_wires, params, index, pos, r)
+        qml.Barrier()
+
+    # Final layer: apply RY to the remaining active wires.
+    for wire in active_wires:
+        qml.RY(params[index], wires=int(wire))
+        if answer == "y":
+            if r[pos] < noise_strength / 3:
+                X(wires=int(wire))
+            elif noise_strength / 3 < r[pos] < 2 * noise_strength / 3:
+                Y(wires=int(wire))
+            elif 2 * noise_strength / 3 < r[pos] < 3 * noise_strength / 3:
+                Z(wires=int(wire))
+        pos += 1
+        index += 1
+    return index, active_wires
+
+num_params, output_wires = qcnn_ansatz_noisy(num_qubits, [0]*100, [0]*100)
 
 
 
-@qml.qnode(qml.device("default.mixed", wires=num_qubits))
-def qcnn_noisy(params, state):
+@qml.qnode(qml.device("default.qubit", wires=num_qubits))
+def qcnn_noisy(params, state, r):
     qml.StatePrep(state, wires=range(num_qubits), normalize=True)
-    _, p_distr = qcnn_ansatz_noisy(num_qubits, params)
-    return p_distr
+    _, output_wires = qcnn_ansatz_noisy(num_qubits, params, r)
+    return qml.probs([int(k) for k in output_wires])
 
 # Vectorized circuit through vmap
-vectorized_qcnn_noisy = vmap(jit(qcnn_noisy), in_axes=(None, 0))
+vectorized_qcnn_noisy = vmap(jit(qcnn_noisy), in_axes=(None, 0, None))
 
 def cross_entropy(pred, Y, T):
     """Multi-class cross entropy loss function"""
@@ -240,7 +260,11 @@ def train_qcnn(num_epochs, lr, T, seed):
 
     # Define the loss function
     def loss_fun(params, X, Y):
-        preds = vectorized_qcnn_noisy(params, X)
+        preds = 0
+        for _ in range(limite):
+            vec_rand = np.random.rand(100)
+            preds = vectorized_qcnn_noisy(params, X, vec_rand) + preds
+        preds = preds / limite
         return cross_entropy(preds, Y, T)
 
     # Consider only analytical points for the training
@@ -285,8 +309,16 @@ plt.show()
 
 
 # Take the predicted classes for each point in the phase diagram
+def predis(params, state):
+    preds = 0
+    for _ in range(limite):
+        vec_rand = np.random.rand(100)
+        preds = vectorized_qcnn_noisy(params, state, vec_rand) + preds
+    preds = preds / limite
+    return preds
+
 predicted_classes = np.argmax(
-    vectorized_qcnn_noisy(trained_params, psis.reshape(-1, 2**num_qubits)),
+    predis(trained_params, psis.reshape(-1, 2**num_qubits)),
     axis=1
 )
 
