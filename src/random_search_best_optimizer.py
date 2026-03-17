@@ -53,20 +53,27 @@ def run_trial(trial):
     n_shots=1000
     
     # Suggesting from a range is often better than a fixed list
-    learning_rate = trial.suggest_float("learning_rate", 1e-2, 6e-1, log=True)
-    schedule_factor = trial.suggest_float("schedule_factor", 0.1, 0.9)
-    schedule_patience = trial.suggest_int("schedule_patience", 2, 10)
-    #optimizer_choice = trial.suggest_categorical("optimizer", ["ASDG", "Adam"])
-    init_type = trial.suggest_categorical("init_type", ["random", "zeros", "small_random"])
+    learning_rate = trial.suggest_float("learning_rate", 9e-2, 6e-1, log=True)
+    schedule_factor = trial.suggest_float("schedule_factor", 0.5, 0.8)
+    
+    # #ATTEMPT AT MAKING IT IN REALTION TO THE SCHEDULE
+    # patience_center = int(5 + 11 * ((1 - schedule_factor)**2))
+    # min_patience = max(5, patience_center - 2)
+    # max_patience = min(14, patience_center + 2)
+    # schedule_patience = trial.suggest_int("schedule_patience", min_patience, max_patience)
 
-    n_repeat = 12 # Set to 1 for speed, increase for more robust statistics
+    schedule_patience = trial.suggest_int("schedule_patience", 5, 14)
+    #optimizer_choice = trial.suggest_categorical("optimizer", ["ASDG", "Adam"])
+    init_type = trial.suggest_categorical("init_type", ["random", "small_random"])
+
+    n_repeat = 30 # Set to 1 for speed, increase for more robust statistics
     energies = []
     epochs_list = []
 
     for _ in range(n_repeat):
         vqe = VQE(n_wires=n_qubits,
             n_layers=ansatz_depth,
-            k=0.2, h=0.5, j= 1, 
+            k=0.8, h=0.3, j= 1, 
             shots= n_shots, 
             patience= 30,  
             param_init=init_type)
@@ -104,9 +111,9 @@ def diagonalize_H(H_matrix):
 
 if __name__ == "__main__":
 
-    n_trials=6
+    n_trials=4
     pbar = tqdm(total=n_trials, desc="Optimizing VQE") # Match total to n_trials
-    torch.manual_seed(42)    
+    #torch.manual_seed(42)    
 
     # list_n_qubits=[4, 6, 8, 12]
     # list_ansatz_depth=[2, 4, 6, 9] # paper says 6(9)

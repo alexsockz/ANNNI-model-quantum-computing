@@ -5,3 +5,7 @@ matplotlib
 torch
 pennylane-lightning-gpu
 optuna
+optuna-dashboard
+nvidia-pyindex
+nvidia-cudnn
+plotly
