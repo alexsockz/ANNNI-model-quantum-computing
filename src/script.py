@@ -15,7 +15,7 @@ config.update("jax_enable_x64", True)
 seed = 123456
 
 # Setting our constants
-num_qubits = 6 # Number of spins in the Hamiltonian (= number of qubits)
+num_qubits = 8 # Number of spins in the Hamiltonian (= number of qubits)
 side = 20     # Discretization of the Phase Diagram
 
 answer = input("noise y or n?").lower().strip()
@@ -87,6 +87,93 @@ for x, k in enumerate(ks):
 
 # Vectorized diagonalization
 psis = vmap(vmap(diagonalize_H))(H_matrices)
+
+
+def qcnn_ansatz(num_qubits, params):
+    """Ansatz of the QCNN model
+    Repetitions of the convolutional and pooling blocks
+    until only 2 wires are left unmeasured
+    """
+
+    # Convolution block
+    def conv(wires, params, index):
+        if len(wires) % 2 == 0:
+            groups = wires.reshape(-1, 2)
+        else:
+            groups = wires[:-1].reshape(-1, 2)
+            qml.RY(params[index], wires=int(wires[-1]))
+            index += 1
+
+        for group in groups:
+            qml.CNOT(wires=[int(group[0]), int(group[1])])
+            for wire in group:
+                qml.RY(params[index], wires=int(wire))
+                index += 1
+
+        return index
+
+    # Pooiling block
+    def pool(wires, params, index):
+        # Process wires in pairs: measure one and conditionally rotate the other.
+        for wire_pool, wire in zip(wires[0::2], wires[1::2]):
+            m_0 = qml.measure(int(wire_pool))
+            qml.cond(m_0 == 0, qml.RX)(params[index],     wires=int(wire))
+            qml.cond(m_0 == 1, qml.RX)(params[index + 1], wires=int(wire))
+            index += 2
+            # Remove the measured wire from active wires.
+            wires = np.delete(wires, np.where(wires == wire_pool))
+
+        # If an odd wire remains, apply a RX rotation.
+        if len(wires) % 2 != 0:
+            qml.RX(params[index], wires=int(wires[-1]))
+            index += 1
+
+        return index, wires
+
+    # Initialize active wires and parameter index.
+    active_wires = np.arange(num_qubits)
+    index = 0
+
+    # Initial layer: apply RY to all wires.
+    for wire in active_wires:
+        qml.RY(params[index], wires=int(wire))
+        index += 1
+
+    # Repeatedly apply convolution and pooling until there are 2 unmeasured wires
+    while len(active_wires) > 2:
+        # Convolution
+        index = conv(active_wires, params, index)
+        # Pooling
+        index, active_wires = pool(active_wires, params, index)
+        qml.Barrier()
+
+    # Final layer: apply RY to the remaining active wires.
+    for wire in active_wires:
+        qml.RY(params[index], wires=int(wire))
+        index += 1
+
+    return index, active_wires
+
+num_params, output_wires = qcnn_ansatz(num_qubits, [0]*100)
+
+@qml.qnode(qml.device("default.qubit", wires=num_qubits))
+def qcnn_circuit(params, state):
+    """QNode with QCNN ansatz and probabilities of unmeasured qubits as output"""
+    # Input ground state from diagonalization
+    qml.StatePrep(state, wires=range(num_qubits), normalize = True)
+    # QCNN
+    _, output_wires = qcnn_ansatz(num_qubits, params)
+
+    return qml.probs([int(k) for k in output_wires])
+
+# Vectorized circuit through vmap
+vectorized_qcnn_circuit = vmap(jit(qcnn_circuit), in_axes=(None, 0))
+
+# Draw the QCNN Architecture
+fig,ax = qml.draw_mpl(qcnn_circuit)(np.arange(num_params), psis[0,0])
+
+
+
 
 def qcnn_ansatz_noisy(num_qubits, params):
     """Ansatz of the QCNN model
@@ -178,6 +265,7 @@ def qcnn_noisy(params, state):
 # Vectorized circuit through vmap
 vectorized_qcnn_noisy = vmap(jit(qcnn_noisy), in_axes=(None, 0))
 
+
 def cross_entropy(pred, Y, T):
     """Multi-class cross entropy loss function"""
     epsilon = 1e-9  # Small value for numerical stability
@@ -202,7 +290,7 @@ def train_qcnn(num_epochs, lr, T, seed):
 
     # Define the loss function
     def loss_fun(params, X, Y):
-        preds = vectorized_qcnn_noisy(params, X)
+        preds = vectorized_qcnn_circuit(params, X)
         return cross_entropy(preds, Y, T)
 
     # Consider only analytical points for the training
