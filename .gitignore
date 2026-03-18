@@ -2,3 +2,4 @@
 !./papers
 venv
 *.ipynb_checkpoints/
+*pycache*
