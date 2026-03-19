@@ -61,7 +61,7 @@ class VQE:
         # this makes parallelization a bit tricky because wires might get crossed between threads
         return qml.probs(wires=range(self.n))        
         
-    def train_VQE(self, epochs=300, learning_rate=0.01, scheduler_patience=5, scheduler_factor=0.8, optimizer_choice="Adam", with_scheduler=True, optuna_trial=None):
+    def train_VQE(self, epochs=300, learning_rate=0.151315, scheduler_patience=12, scheduler_factor=0.75816, optimizer_choice="Adam", with_scheduler=True, optuna_trial=None):
         
         # various variables to keep track of what is happening to the model
         best_energy = float('inf')
