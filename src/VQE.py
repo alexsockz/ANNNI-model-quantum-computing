@@ -1,6 +1,7 @@
 import pennylane as qml
 from torch import optim
 from torch import rand, zeros,full,rand, remainder, no_grad, pow, sum, manual_seed, tensor
+import torch
 import torch.nn as nn
 import numpy as np
 
@@ -45,6 +46,7 @@ class VQE:
         elif param_init=="small_random":
             self.parameters_vqe = nn.Parameter(rand((self.m, self.n)) * 0.01, requires_grad=True)
     
+
     # Using 'probs' is often more stable for gradients than 'counts', 
     # but it represents the exact same hardware reality (sampling). 
     # using expvalue is irrealistic since you don't have access to the computed matrix   
@@ -52,13 +54,12 @@ class VQE:
         # The ansatz must be purely gate operations
         self.ansatz(params)
         
-        # this is to measure in base X instead of Z while the measurment remain the same
+        # Apply basis rotation: Hadamard to measure in X basis
         if basis == "X":
             for i in range(self.n): 
                 qml.Hadamard(wires=i)
         
-        # In Pennylane, all ops (ansatz + basis change) must be queued BEFORE measurements, 
-        # this makes parallelization a bit tricky because wires might get crossed between threads
+        # Measure in computational basis after basis rotation
         return qml.probs(wires=range(self.n))        
         
     def train_VQE(self, epochs=300, learning_rate=0.151315, scheduler_patience=12, scheduler_factor=0.75816, optimizer_choice="Adam", with_scheduler=True, optuna_trial=None):
@@ -92,17 +93,15 @@ class VQE:
                                                          factor=scheduler_factor if scheduler_decision else 1.0)
         # now the training begins
         for epoch in range(epochs):
-            # ignore this, says 
-            # "delete the old gradients calculated, don't add it to the one i'm calculating this epoch"
+            # Delete old gradients
             optimizer.zero_grad()
             
-            # Use the pre-initialized qnode
+            # Use the pre-initialized qnode to measure in both Z and X bases (with shots)
             probs_z = self.qnode(self.parameters_vqe, basis="Z")
             probs_x = self.qnode(self.parameters_vqe, basis="X")
             
-            # basically calculate the hamiltonian:
+            # Compute energy from shot-based probabilities
             energy = self._compute_energy_from_probs(probs_z, probs_x)
-            #i'm using torch, so everything is a tensor            
             energy_val = energy.item()
             
             # # --- Optuna Reporting & Pruning ---
@@ -158,38 +157,41 @@ class VQE:
 
     def _compute_energy_from_probs(self, probs_z, probs_x):
         """
-        Calculates expectation values from the probability tensor.
-        This replaces your counts_to_expectation loop.
+        Calculates expectation values from shot-based probabilities.
+        Realistic hardware simulation: uses finite-shot measurement outcomes.
         """
+        probs_z = probs_z.float()
+        probs_x = probs_x.float()
         
-        energy = tensor(0.0)
+        energy = tensor(0.0, dtype=torch.float64)
 
-        # Pre-calculate bitstrings for the 2^n states
-        # the eigenvalue will be positive or negative depending on the ammount bits set
-        # Example for 2 qubits: [[0,0], [0,1], [1,0], [1,1]]
-        states = tensor([[int(b) for b in format(i, f'0{self.n}b')] for i in range(2**self.n)])
+        # Pre-calculate bitstrings for the 2^n states in bigendian order
+        bitstrings = tensor([[(i >> (self.n - 1 - j)) & 1 for j in range(self.n)] for i in range(2**self.n)], dtype=torch.float64)
 
-        def get_expectation(probs, indices):
-            # Calculate parity: (-1)^sum(bits at indices) (using what we did before )
-            # This is the vectorized version of your eigenvalue loop
-            relevant_bits = states[:, indices] # either i + it's neighbour or i + it's second neighbour
-            parities = pow(-1, sum(relevant_bits, dim=1))
-            return sum(parities * probs)
+        # For each term in the Hamiltonian, compute its expectation value from probabilities
+        def get_expectation_from_probs(probs, bit_indices):
+            """
+            Compute <Z_i Z_j ...> from probability distribution.
+            For bitstring b, eigenvalue is (-1)^(sum of bits at positions bit_indices)
+            """
+            relevant_bits = bitstrings[:, bit_indices]  # Extract bits at specified positions
+            eigenvalues = pow(-1.0, sum(relevant_bits, dim=1))  # (-1)^(sum) for each bitstring
+            return sum(eigenvalues * probs)  # Sum over all bitstrings weighted by probability
 
-        # Nearest Neighbor ZZ
+        # Nearest Neighbor XX interactions
         for i in range(self.n - 1):
-            energy -= self.j * get_expectation(probs_z, [i, i+1])
+            energy -= self.j * get_expectation_from_probs(probs_x, [i, i+1])
         
-        # Next-Nearest Neighbor ZZ
+        # Next-Nearest Neighbor XX interactions
         for i in range(self.n - 2):
-            energy += self.k * get_expectation(probs_z, [i, i+2])
+            energy += self.k * get_expectation_from_probs(probs_x, [i, i+2])
             
-        # Transverse Field X
+        # Transverse Field Z interactions
         for i in range(self.n):
-            energy -= self.h * get_expectation(probs_x, [i])
+            energy -= self.h * get_expectation_from_probs(probs_z, [i])
 
         return energy
-
+    
     def ansatz(self, params):
         # ry O     X
         # ry X O
@@ -207,9 +209,15 @@ if __name__ == "__main__":
     manual_seed(42)
     print("start")
     t1 = perf_counter()
+    n_qubits=4
+    k=0.2
+    h=0.5
     # Note: For 2 qubits, next-nearest neighbor (k) doesn't exist, which is fine.
-    vqe = VQE(n_wires=4, n_layers=2, k=0.2, h=0.5)  
-    best_energy, best_epoch, last_epoch, energy_history, lr_history = vqe.train_VQE(epochs=300, learning_rate=0.05)  
-    
+    vqe = VQE(n_wires=n_qubits, n_layers=4, k=k, h=h)  
+    best_energy, best_epoch, last_epoch, energy_history, lr_history = vqe.train_VQE(epochs=300)  
+
+    import energy
+    print(energy.theoretical_energy(n_qubits,k,h))
+        
     print(f"\nFinal Ground State Energy: {best_energy:.6f}")
     print(f"Total time: {perf_counter() - t1:.2f}s")
