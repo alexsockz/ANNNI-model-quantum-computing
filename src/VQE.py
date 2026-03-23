@@ -36,7 +36,7 @@ class VQE:
         # For each parameter, it evaluates the circuit twice: once at θ+π/2 and once at θ-π/2
         # Much slower but realistic hardware simulation with shot-based measurements
         if shots==None:
-            self.qnode = qml.QNode(self._train_circuit, self.dev, interface="torch", diff_method="adjoint")
+            self.qnode = qml.QNode(self._train_circuit, self.dev, interface="torch", diff_method="best")
         else:    
             self.qnode = qml.QNode(self._train_circuit, self.dev, interface="torch", diff_method="parameter-shift")
         self.qnode._set_shots(self.shots)
@@ -214,14 +214,14 @@ class VQE:
 if __name__ == "__main__":
     from time import perf_counter
 
-    manual_seed(42)
+    # manual_seed(42)
     print("start")
     t1 = perf_counter()
-    n_qubits=4
+    n_qubits=6
     k=0.2
     h=0.5
     # Note: For 2 qubits, next-nearest neighbor (k) doesn't exist, which is fine.
-    vqe = VQE(n_wires=n_qubits, n_layers=4, k=k, h=h)  
+    vqe = VQE(n_wires=n_qubits, n_layers=6, k=k, h=h, shots=None)  
     best_energy, best_epoch, last_epoch, energy_history, lr_history = vqe.train_VQE(epochs=300)  
 
     import energy
