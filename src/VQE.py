@@ -6,18 +6,21 @@ import torch.nn as nn
 import numpy as np
 
 class VQE:
-    def __init__(self, n_wires, n_layers, k, h, j=1, shots=1000, patience=30, param_init:str="random"):
+    def __init__(self, n_wires, n_layers, k, h, j=1, shots=1000, patience=30, param_init:str="random", noise=False):
         self.n = n_wires
         self.m = n_layers
         self.k = k
         self.h = h
         self.j = j
+        self.noise = noise
         self.early_stopping_patience = patience
         self.shots = shots
         
         # 1. Device Selection for better performances depending on available devices on computer
         #qubit = cpu
-        if n_wires < 15:
+        if self.noise:
+            self.dev = qml.device("default.mixed", wires=self.n)
+        elif n_wires < 15:
             self.dev = qml.device("lightning.qubit", wires=self.n)
         else:
             try:
@@ -32,7 +35,10 @@ class VQE:
         # Computes gradients numerically using finite differences
         # For each parameter, it evaluates the circuit twice: once at θ+π/2 and once at θ-π/2
         # Much slower but realistic hardware simulation with shot-based measurements
-        self.qnode = qml.QNode(self._train_circuit, self.dev, interface="torch", diff_method="parameter-shift")
+        if shots==None:
+            self.qnode = qml.QNode(self._train_circuit, self.dev, interface="torch", diff_method="adjoint")
+        else:    
+            self.qnode = qml.QNode(self._train_circuit, self.dev, interface="torch", diff_method="parameter-shift")
         self.qnode._set_shots(self.shots)
 
         # 3. Param Init
@@ -45,7 +51,22 @@ class VQE:
             self.parameters_vqe = nn.Parameter(full((self.m, self.n),np.pi), requires_grad=True)
         elif param_init=="small_random":
             self.parameters_vqe = nn.Parameter(rand((self.m, self.n)) * 0.01, requires_grad=True)
-    
+
+        # Pre-calculate bitstrings for the 2^n states in bigendian order
+        self.bitstrings = tensor([[(i >> (self.n - 1 - j)) & 1 for j in range(self.n)] for i in range(2**self.n)], dtype=torch.float64)
+
+        # Pre-calculate eigenvalues for all Hamiltonian terms to make training extremely fast
+        self.eigenvalues_nn = []
+        for i in range(self.n - 1):
+            self.eigenvalues_nn.append(pow(-1.0, sum(self.bitstrings[:, [i, i+1]], dim=1)))
+            
+        self.eigenvalues_nnn = []
+        for i in range(self.n - 2):
+            self.eigenvalues_nnn.append(pow(-1.0, sum(self.bitstrings[:, [i, i+2]], dim=1)))
+            
+        self.eigenvalues_z = []
+        for i in range(self.n):
+            self.eigenvalues_z.append(pow(-1.0, sum(self.bitstrings[:, [i]], dim=1)))
 
     # Using 'probs' is often more stable for gradients than 'counts', 
     # but it represents the exact same hardware reality (sampling). 
@@ -165,30 +186,17 @@ class VQE:
         
         energy = tensor(0.0, dtype=torch.float64)
 
-        # Pre-calculate bitstrings for the 2^n states in bigendian order
-        bitstrings = tensor([[(i >> (self.n - 1 - j)) & 1 for j in range(self.n)] for i in range(2**self.n)], dtype=torch.float64)
-
-        # For each term in the Hamiltonian, compute its expectation value from probabilities
-        def get_expectation_from_probs(probs, bit_indices):
-            """
-            Compute <Z_i Z_j ...> from probability distribution.
-            For bitstring b, eigenvalue is (-1)^(sum of bits at positions bit_indices)
-            """
-            relevant_bits = bitstrings[:, bit_indices]  # Extract bits at specified positions
-            eigenvalues = pow(-1.0, sum(relevant_bits, dim=1))  # (-1)^(sum) for each bitstring
-            return sum(eigenvalues * probs)  # Sum over all bitstrings weighted by probability
-
         # Nearest Neighbor XX interactions
         for i in range(self.n - 1):
-            energy -= self.j * get_expectation_from_probs(probs_x, [i, i+1])
+            energy -= self.j * sum(self.eigenvalues_nn[i] * probs_x)
         
         # Next-Nearest Neighbor XX interactions
         for i in range(self.n - 2):
-            energy += self.k * get_expectation_from_probs(probs_x, [i, i+2])
+            energy += self.k * sum(self.eigenvalues_nnn[i] * probs_x)
             
         # Transverse Field Z interactions
         for i in range(self.n):
-            energy -= self.h * get_expectation_from_probs(probs_z, [i])
+            energy -= self.h * sum(self.eigenvalues_z[i] * probs_z)
 
         return energy
     
