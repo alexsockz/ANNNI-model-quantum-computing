@@ -4,6 +4,8 @@ from torch import rand, zeros,full,rand, remainder, no_grad, pow, sum, manual_se
 import torch
 import torch.nn as nn
 import numpy as np
+from qiskit_aer.noise import NoiseModel, depolarizing_error
+from qiskit_aer import AerSimulator
 
 class VQE:
     def __init__(self, n_wires, n_layers, k, h, j=1, shots=1000, patience=30, param_init:str="random", noise=False):
@@ -19,7 +21,11 @@ class VQE:
         # 1. Device Selection for better performances depending on available devices on computer
         #qubit = cpu
         if self.noise:
-            self.dev = qml.device("default.mixed", wires=self.n)
+            noise_model = NoiseModel()
+            error = depolarizing_error(0.01, 1)  # 1-qubit depolarizing
+            noise_model.add_all_qubit_quantum_error(error, ['u1', 'u2', 'u3'])
+
+            self.dev = qml.device("qiskit.aer", wires=self.n, noise_model=noise_model)
         elif n_wires < 15:
             self.dev = qml.device("lightning.qubit", wires=self.n)
         else:
@@ -83,7 +89,7 @@ class VQE:
         # Measure in computational basis after basis rotation
         return qml.probs(wires=range(self.n))        
         
-    def train_VQE(self, epochs=300, learning_rate=0.151315, scheduler_patience=12, scheduler_factor=0.75816, optimizer_choice="Adam", with_scheduler=True, optuna_trial=None):
+    def train_VQE(self, epochs=3000, learning_rate=0.151315, scheduler_patience=12, scheduler_factor=0.75816, optimizer_choice="Adam", with_scheduler=True, optuna_trial=True):
         
         # various variables to keep track of what is happening to the model
         best_energy = float('inf')
@@ -220,12 +226,16 @@ if __name__ == "__main__":
     n_qubits=6
     k=0.2
     h=0.5
+    #manual_seed(42)
     # Note: For 2 qubits, next-nearest neighbor (k) doesn't exist, which is fine.
-    vqe = VQE(n_wires=n_qubits, n_layers=6, k=k, h=h, shots=None)  
-    best_energy, best_epoch, last_epoch, energy_history, lr_history = vqe.train_VQE(epochs=300)  
+    vqe = VQE(n_wires=n_qubits, n_layers=68, k=k, h=h, shots=None, noise=True)  
+    best_energy, best_epoch, last_epoch, energy_history, lr_history = vqe.train_VQE()  
 
     import energy
     print(energy.theoretical_energy(n_qubits,k,h))
-        
+    import matplotlib.pyplot as plt
+
+    plt.plot(energy_history)
+    plt.savefig("qve.png")
     print(f"\nFinal Ground State Energy: {best_energy:.6f}")
     print(f"Total time: {perf_counter() - t1:.2f}s")
