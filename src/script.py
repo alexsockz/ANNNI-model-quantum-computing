@@ -1,3 +1,15 @@
+import os
+import warnings
+
+# Disable CUDA entirely to avoid CuDNN version mismatch error
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
+os.environ["JAX_PLATFORM_NAME"] = "cpu"
+os.environ["JAX_QUIET_STARTUP"] = "1"
+os.environ["OMP_NUM_THREADS"] = "1"
+
+# Suppress warnings
+warnings.filterwarnings('ignore', category=RuntimeWarning)
+
 import pennylane as qml
 import numpy as np
 from jax import jit, vmap, value_and_grad, random, config
@@ -9,6 +21,8 @@ from pennylane import DepolarizingChannel
 
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap, BoundaryNorm
+import multiprocessing as mp
+from functools import partial
 
 config.update("jax_enable_x64", True)
 
@@ -18,11 +32,7 @@ seed = 123456
 num_qubits = 8 # Number of spins in the Hamiltonian (= number of qubits)
 side = 20     # Discretization of the Phase Diagram
 
-answer = input("noise y or n?").lower().strip()
-if answer == "y":
-    noise_strength = 0.01
-elif answer == "n":
-    noise_strength = None
+# Note: noise is now handled per training process, see train_qcnn_for_noise function
 
 
 def get_H(num_spins, k, h):
@@ -89,181 +99,42 @@ for x, k in enumerate(ks):
 psis = vmap(vmap(diagonalize_H))(H_matrices)
 
 
-def qcnn_ansatz(num_qubits, params):
-    """Ansatz of the QCNN model
-    Repetitions of the convolutional and pooling blocks
-    until only 2 wires are left unmeasured
-    """
-
-    # Convolution block
-    def conv(wires, params, index):
-        if len(wires) % 2 == 0:
-            groups = wires.reshape(-1, 2)
-        else:
-            groups = wires[:-1].reshape(-1, 2)
-            qml.RY(params[index], wires=int(wires[-1]))
-            index += 1
-
-        for group in groups:
-            qml.CNOT(wires=[int(group[0]), int(group[1])])
-            for wire in group:
-                qml.RY(params[index], wires=int(wire))
+def get_num_params(num_qubits):
+    """Compute the number of parameters for QCNN ansatz"""
+    def qcnn_ansatz_temp(num_qubits, params):
+        def conv(wires, params, index):
+            if len(wires) % 2 == 0:
+                groups = wires.reshape(-1, 2)
+            else:
+                groups = wires[:-1].reshape(-1, 2)
                 index += 1
-
-        return index
-
-    # Pooiling block
-    def pool(wires, params, index):
-        # Process wires in pairs: measure one and conditionally rotate the other.
-        for wire_pool, wire in zip(wires[0::2], wires[1::2]):
-            m_0 = qml.measure(int(wire_pool))
-            qml.cond(m_0 == 0, qml.RX)(params[index],     wires=int(wire))
-            qml.cond(m_0 == 1, qml.RX)(params[index + 1], wires=int(wire))
-            index += 2
-            # Remove the measured wire from active wires.
-            wires = np.delete(wires, np.where(wires == wire_pool))
-
-        # If an odd wire remains, apply a RX rotation.
-        if len(wires) % 2 != 0:
-            qml.RX(params[index], wires=int(wires[-1]))
-            index += 1
-
-        return index, wires
-
-    # Initialize active wires and parameter index.
-    active_wires = np.arange(num_qubits)
-    index = 0
-
-    # Initial layer: apply RY to all wires.
-    for wire in active_wires:
-        qml.RY(params[index], wires=int(wire))
-        index += 1
-
-    # Repeatedly apply convolution and pooling until there are 2 unmeasured wires
-    while len(active_wires) > 2:
-        # Convolution
-        index = conv(active_wires, params, index)
-        # Pooling
-        index, active_wires = pool(active_wires, params, index)
-        qml.Barrier()
-
-    # Final layer: apply RY to the remaining active wires.
-    for wire in active_wires:
-        qml.RY(params[index], wires=int(wire))
-        index += 1
-
-    return index, active_wires
-
-num_params, output_wires = qcnn_ansatz(num_qubits, [0]*100)
-
-@qml.qnode(qml.device("default.qubit", wires=num_qubits))
-def qcnn_circuit(params, state):
-    """QNode with QCNN ansatz and probabilities of unmeasured qubits as output"""
-    # Input ground state from diagonalization
-    qml.StatePrep(state, wires=range(num_qubits), normalize = True)
-    # QCNN
-    _, output_wires = qcnn_ansatz(num_qubits, params)
-
-    return qml.probs([int(k) for k in output_wires])
-
-# Vectorized circuit through vmap
-vectorized_qcnn_circuit = vmap(jit(qcnn_circuit), in_axes=(None, 0))
-
-# Draw the QCNN Architecture
-fig,ax = qml.draw_mpl(qcnn_circuit)(np.arange(num_params), psis[0,0])
-
-
-
-
-def qcnn_ansatz_noisy(num_qubits, params):
-    """Ansatz of the QCNN model
-    Repetitions of the convolutional and pooling blocks
-    until only 2 wires are left unmeasured
-    """
-
-    # Convolution block
-    def conv(wires, params, index):
-        if len(wires) % 2 == 0:
-            groups = wires.reshape(-1, 2)
-        else:
-            groups = wires[:-1].reshape(-1, 2)
-            qml.RY(params[index], wires=int(wires[-1]))
-            if answer == "y":
-                qml.DepolarizingChannel(noise_strength, wires=int(wires[-1]))
-            index += 1
-
-        for group in groups:
-            qml.CNOT(wires=[int(group[0]), int(group[1])])
-            if answer == "y":
-                qml.DepolarizingChannel(noise_strength, wires=int(group[0]))
-                qml.DepolarizingChannel(noise_strength, wires=int(group[1]))
-            for wire in group:
-                qml.RY(params[index], wires=int(wire))
-                if answer == "y":
-                    qml.DepolarizingChannel(noise_strength, wires=int(wire))
+            for group in groups:
+                for wire in group:
+                    index += 1
+            return index
+        
+        def pool(wires, params, index):
+            for wire_pool, wire in zip(wires[0::2], wires[1::2]):
+                index += 2
+                wires = np.delete(wires, np.where(wires == wire_pool))
+            if len(wires) % 2 != 0:
                 index += 1
-        return index
-
-    # Pooiling block
-    def pool(wires, params, index):
-        for wire_pool, wire in zip(wires[0::2], wires[1::2]):
-            m_0 = qml.measure(int(wire_pool))
-            # Nota: dopo una misura non mettiamo rumore perché lo stato è collassato
-            qml.cond(m_0 == 0, qml.RX)(params[index], wires=int(wire))
-            qml.cond(m_0 == 1, qml.RX)(params[index + 1], wires=int(wire))
-            # Dopo le RX condizionali, aggiungiamo rumore sui qubit ancora attivi
-            if answer == "y":
-                qml.DepolarizingChannel(noise_strength, wires=int(wire))
-            index += 2
-            wires = np.delete(wires, np.where(wires == wire_pool))
-
-        if len(wires) % 2 != 0:
-            qml.RX(params[index], wires=int(wires[-1]))
-            if answer == "y":
-                qml.DepolarizingChannel(noise_strength, wires=int(wires[-1]))
+            return index, wires
+        
+        active_wires = np.arange(num_qubits)
+        index = 0
+        for wire in active_wires:
             index += 1
-        return index, wires
+        while len(active_wires) > 2:
+            index = conv(active_wires, params, index)
+            index, active_wires = pool(active_wires, params, index)
+        for wire in active_wires:
+            index += 1
+        return index, active_wires
+    
+    return qcnn_ansatz_temp(num_qubits, [0]*100)[0]
 
-    # Initialize active wires and parameter index.
-    active_wires = np.arange(num_qubits)
-    index = 0
-
-    # Initial layer: apply RY to all wires.
-    for wire in active_wires:
-        qml.RY(params[index], wires=int(wire))
-        if answer == "y":
-            qml.DepolarizingChannel(noise_strength, wires=int(wire))
-        index += 1
-
-    # Repeatedly apply convolution and pooling until there are 2 unmeasured wires
-    while len(active_wires) > 2:
-        index = conv(active_wires, params, index)
-        index, active_wires = pool(active_wires, params, index)
-        qml.Barrier()
-
-    # Final layer: apply RY to the remaining active wires.
-    for wire in active_wires:
-        qml.RY(params[index], wires=int(wire))
-        if answer == "y":
-            qml.DepolarizingChannel(noise_strength, wires=int(wire))
-        index += 1
-    return index, active_wires
-
-num_params, output_wires = qcnn_ansatz_noisy(num_qubits, [0]*100)
-
-if answer == "y":
-    dev = qml.device("default.mixed", wires=num_qubits)
-elif answer == "n":
-    dev = qml.device("default.qubit", wires=num_qubits)
-
-@qml.qnode(dev)
-def qcnn_noisy(params, state):
-    qml.StatePrep(state, wires=range(num_qubits), normalize=True)
-    _, output_wires = qcnn_ansatz_noisy(num_qubits, params)
-    return qml.probs([int(k) for k in output_wires])
-
-# Vectorized circuit through vmap
-vectorized_qcnn_noisy = vmap(jit(qcnn_noisy), in_axes=(None, 0))
+num_params = get_num_params(num_qubits)
 
 
 def cross_entropy(pred, Y, T):
@@ -281,57 +152,258 @@ def cross_entropy(pred, Y, T):
 # Mask for the analytical points
 analytical_mask = (K == 0) | (H == 0)
 
-def train_qcnn(num_epochs, lr, T, seed):
-    """Training function of the QCNN architecture"""
+def train_qcnn_for_noise(noise_value, num_epochs=100, lr=5e-2, T=.5, seed=seed, batch_size=16):
+    """Train QCNN for a specific noise level.
+    
+    Args:
+        noise_value: Noise strength (None for no noise, or float between 0-1)
+        num_epochs: Number of training epochs
+        lr: Learning rate
+        T: Temperature parameter
+        seed: Random seed
+        batch_size: Mini-batch size
+    
+    Returns:
+        dict with noise_value, trained_params, loss_curve
+    """
+    # Set answer based on noise value
+    answer_local = "n" if noise_value is None else "y"
+    noise_strength_local = noise_value if noise_value is not None else None
+    
+    # Create device for this process
+    if answer_local == "y":
+        dev = qml.device("default.mixed", wires=num_qubits)
+    else:
+        dev = qml.device("default.qubit", wires=num_qubits)
 
-    # Initialize PRNG key
-    key = random.PRNGKey(seed)
-    key, subkey = random.split(key)
+    # Define local qcnn_ansatz without noise
+    def qcnn_ansatz_local(num_qubits, params):
+        """Ansatz of the QCNN model without noise"""
+        def conv(wires, params, index):
+            if len(wires) % 2 == 0:
+                groups = wires.reshape(-1, 2)
+            else:
+                groups = wires[:-1].reshape(-1, 2)
+                qml.RY(params[index], wires=int(wires[-1]))
+                index += 1
 
-    # Define the loss function
-    def loss_fun(params, X, Y):
-        preds = vectorized_qcnn_circuit(params, X)
-        return cross_entropy(preds, Y, T)
+            for group in groups:
+                qml.CNOT(wires=[int(group[0]), int(group[1])])
+                for wire in group:
+                    qml.RY(params[index], wires=int(wire))
+                    index += 1
+            return index
 
-    # Consider only analytical points for the training
-    X_train, Y_train = psis[analytical_mask], phases[analytical_mask]
+        def pool(wires, params, index):
+            for wire_pool, wire in zip(wires[0::2], wires[1::2]):
+                m_0 = qml.measure(int(wire_pool))
+                qml.cond(m_0 == 0, qml.RX)(params[index],     wires=int(wire))
+                qml.cond(m_0 == 1, qml.RX)(params[index + 1], wires=int(wire))
+                index += 2
+                wires = np.delete(wires, np.where(wires == wire_pool))
 
-    # Convert labels to one-hot encoding
-    Y_train_onehot = jnp.eye(4)[Y_train]
+            if len(wires) % 2 != 0:
+                qml.RX(params[index], wires=int(wires[-1]))
+                index += 1
+            return index, wires
 
-    # Randomly initialize the parameters
-    params = random.normal(subkey, (num_params,))
+        active_wires = np.arange(num_qubits)
+        index = 0
 
-    # Initialize Adam optimizer
-    optimizer = optax.adam(learning_rate=lr)
-    optimizer_state = optimizer.init(params)
+        for wire in active_wires:
+            qml.RY(params[index], wires=int(wire))
+            index += 1
 
+        while len(active_wires) > 2:
+            index = conv(active_wires, params, index)
+            index, active_wires = pool(active_wires, params, index)
+            qml.Barrier()
 
-    loss_curve = []
-    for epoch in range(num_epochs):
-        # Compute loss and gradients
-        loss, grads = value_and_grad(loss_fun)(params, X_train, Y_train_onehot)
+        for wire in active_wires:
+            qml.RY(params[index], wires=int(wire))
+            index += 1
 
-        # Update parameters
-        updates, optimizer_state = optimizer.update(grads, optimizer_state)
-        params = optax.apply_updates(params, updates)
+        return index, active_wires
 
-        loss_curve.append(loss)
+    # Define local qcnn_circuit using clean ansatz (used for training)
+    @qml.qnode(qml.device("default.qubit", wires=num_qubits))
+    def qcnn_circuit_local(params, state):
+        qml.StatePrep(state, wires=range(num_qubits), normalize=True)
+        _, output_wires = qcnn_ansatz_local(num_qubits, params)
+        return qml.probs([int(k) for k in output_wires])
 
-    return params, loss_curve
+    # Define noisy ansatz
+    def qcnn_ansatz_noisy_local(num_qubits, params):
+        """Ansatz of the QCNN model with noise injection"""
+        def conv(wires, params, index):
+            if len(wires) % 2 == 0:
+                groups = wires.reshape(-1, 2)
+            else:
+                groups = wires[:-1].reshape(-1, 2)
+                qml.RY(params[index], wires=int(wires[-1]))
+                if answer_local == "y":
+                    qml.DepolarizingChannel(noise_strength_local, wires=int(wires[-1]))
+                index += 1
 
-trained_params, loss_curve = train_qcnn(num_epochs=100, lr=5e-2, T=.5, seed=seed)
+            for group in groups:
+                qml.CNOT(wires=[int(group[0]), int(group[1])])
+                if answer_local == "y":
+                    qml.DepolarizingChannel(noise_strength_local, wires=int(group[0]))
+                    qml.DepolarizingChannel(noise_strength_local, wires=int(group[1]))
+                for wire in group:
+                    qml.RY(params[index], wires=int(wire))
+                    if answer_local == "y":
+                        qml.DepolarizingChannel(noise_strength_local, wires=int(wire))
+                    index += 1
+            return index
 
+        def pool(wires, params, index):
+            for wire_pool, wire in zip(wires[0::2], wires[1::2]):
+                m_0 = qml.measure(int(wire_pool))
+                qml.cond(m_0 == 0, qml.RX)(params[index], wires=int(wire))
+                qml.cond(m_0 == 1, qml.RX)(params[index + 1], wires=int(wire))
+                if answer_local == "y":
+                    qml.DepolarizingChannel(noise_strength_local, wires=int(wire))
+                index += 2
+                wires = np.delete(wires, np.where(wires == wire_pool))
 
+            if len(wires) % 2 != 0:
+                qml.RX(params[index], wires=int(wires[-1]))
+                if answer_local == "y":
+                    qml.DepolarizingChannel(noise_strength_local, wires=int(wires[-1]))
+                index += 1
+            return index, wires
 
-# Plot the loss curve
-plt.figure()
-plt.plot(loss_curve, label="Loss", color="blue", linewidth=2)
-plt.xlabel("Epochs"), plt.ylabel("Cross-Entropy Loss")
-plt.title("Figure 4. QCNN Training Cross-Entropy Loss Curve")
-plt.legend()
-plt.grid()
-plt.show()
+        active_wires = np.arange(num_qubits)
+        index = 0
+
+        for wire in active_wires:
+            qml.RY(params[index], wires=int(wire))
+            if answer_local == "y":
+                qml.DepolarizingChannel(noise_strength_local, wires=int(wire))
+            index += 1
+
+        while len(active_wires) > 2:
+            index = conv(active_wires, params, index)
+            index, active_wires = pool(active_wires, params, index)
+            qml.Barrier()
+
+        for wire in active_wires:
+            qml.RY(params[index], wires=int(wire))
+            if answer_local == "y":
+                qml.DepolarizingChannel(noise_strength_local, wires=int(wire))
+            index += 1
+        return index, active_wires
+
+    @qml.qnode(dev)
+    def qcnn_noisy_local(params, state):
+        qml.StatePrep(state, wires=range(num_qubits), normalize=True)
+        _, output_wires = qcnn_ansatz_noisy_local(num_qubits, params)
+        return qml.probs([int(k) for k in output_wires])
+
+    # Vectorized circuits
+    vectorized_qcnn_circuit_local = vmap(jit(qcnn_circuit_local), in_axes=(None, 0))
+    vectorized_qcnn_noisy_local = vmap(jit(qcnn_noisy_local), in_axes=(None, 0))
+
+    # Training function
+    def train_qcnn_local(use_noisy=False):
+        """Train QCNN with optional noise"""
+        key = random.PRNGKey(seed)
+        key, subkey = random.split(key)
+
+        circuit_to_use = vectorized_qcnn_noisy_local if use_noisy else vectorized_qcnn_circuit_local
+
+        def loss_fun(params, X, Y):
+            preds = circuit_to_use(params, X)
+            return cross_entropy(preds, Y, T)
+
+        X_train, Y_train = psis[analytical_mask], phases[analytical_mask]
+        Y_train_onehot = jnp.eye(4)[Y_train]
+
+        num_batches = int(np.ceil(len(X_train) / batch_size))
+        params = random.normal(subkey, (num_params,))
+        optimizer = optax.adam(learning_rate=lr)
+        optimizer_state = optimizer.init(params)
+
+        loss_curve = []
+        for epoch in range(num_epochs):
+            key, subkey = random.split(key)
+            shuffle_indices = random.permutation(subkey, len(X_train))
+            X_shuffled = X_train[shuffle_indices]
+            Y_shuffled = Y_train_onehot[shuffle_indices]
+            
+            batch_losses = []
+            for batch_idx in range(num_batches):
+                start_idx = batch_idx * batch_size
+                end_idx = min(start_idx + batch_size, len(X_train))
+                
+                X_batch = X_shuffled[start_idx:end_idx]
+                Y_batch = Y_shuffled[start_idx:end_idx]
+                
+                loss, grads = value_and_grad(loss_fun)(params, X_batch, Y_batch)
+                batch_losses.append(loss)
+                
+                updates, optimizer_state = optimizer.update(grads, optimizer_state)
+                params = optax.apply_updates(params, updates)
+            
+            epoch_loss = np.mean(batch_losses)
+            loss_curve.append(epoch_loss)
+
+        return params, loss_curve
+
+    # Train with noise
+    trained_params, loss_curve = train_qcnn_local(use_noisy=True)
+    
+    return {
+        'noise': noise_value,
+        'trained_params': trained_params,
+        'loss_curve': loss_curve
+    }
+
+if __name__ == "__main__":
+    # Define noise values to train over
+    noise_values = [None] + list(np.arange(0.02, 0.22, 0.02))  # None, 0.02, 0.04, ..., 0.20
+    
+    print(f"Training over {len(noise_values)} noise levels: {noise_values}")
+    
+    # Use partial to create worker function with fixed parameters
+    worker = partial(train_qcnn_for_noise, num_epochs=100, lr=5e-2, T=.5, seed=seed, batch_size=16)
+    
+    # Multiprocess training
+    num_cores = mp.cpu_count()
+    print(f"Using {num_cores} cores for parallel training\n")
+    
+    results_list = []
+    with mp.Pool(processes=num_cores) as pool:
+        from tqdm import tqdm
+        pbar = tqdm(total=len(noise_values), desc="Training over noise levels", unit="model")
+        
+        for result in pool.imap_unordered(worker, noise_values):
+            results_list.append(result)
+            pbar.update(1)
+        pbar.close()
+    
+    # Sort results by noise value for convenience
+    results_list.sort(key=lambda x: (x['noise'] is None, x['noise']))
+    
+    print("\nTraining complete!")
+    print(f"Trained {len(results_list)} models")
+    
+    # Extract the best model (noise=None) for predictions
+    best_result = next(r for r in results_list if r['noise'] is None)
+    trained_params = best_result['trained_params']
+    
+    # Plot loss curves for comparison
+    plt.figure(figsize=(12, 6))
+    for result in results_list:
+        noise_label = "No noise" if result['noise'] is None else f"Noise={result['noise']:.2f}"
+        plt.plot(result['loss_curve'], label=noise_label, alpha=0.7)
+    plt.xlabel("Epochs"), plt.ylabel("Cross-Entropy Loss")
+    plt.title("Training Loss Curves for Different Noise Levels")
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    plt.grid()
+    plt.tight_layout()
+    plt.show()
 
 
 # Take the predicted classes for each point in the phase diagram
