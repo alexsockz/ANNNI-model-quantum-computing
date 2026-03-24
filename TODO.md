@@ -8,5 +8,6 @@
 ## presentation list
 - vqe
 - qcnn
-- time evol  
+- time evol
+
 We need to see how to divide the different parts but mantenendo un filo logico e uno scopo
