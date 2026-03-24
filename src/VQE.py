@@ -6,9 +6,10 @@ import torch.nn as nn
 import numpy as np
 from qiskit_aer.noise import NoiseModel, depolarizing_error
 from qiskit_aer import AerSimulator
+from ground_state_at_borders import calc_state
 
 class VQE:
-    def __init__(self, n_wires, n_layers, k, h, j=1, shots=1000, patience=30, param_init:str="random", noise=False):
+    def __init__(self, n_wires, n_layers, k, h, j=1, shots=1000, patience=30, param_init:str="random", noise=False): #supervised=true
         self.n = n_wires
         self.m = n_layers
         self.k = k
@@ -77,7 +78,10 @@ class VQE:
     # Using 'probs' is often more stable for gradients than 'counts', 
     # but it represents the exact same hardware reality (sampling). 
     # using expvalue is irrealistic since you don't have access to the computed matrix   
-    def _train_circuit(self, params, basis="Z"):
+    def _train_circuit(self, params, basis="Z",starting_state=None):
+
+        if(starting_state!=None):
+            qml.StatePrep(starting_state, wires=range(self.n), normalize = True)
         # The ansatz must be purely gate operations
         self.ansatz(params)
         
@@ -88,9 +92,43 @@ class VQE:
         
         # Measure in computational basis after basis rotation
         return qml.probs(wires=range(self.n))        
-        
+    
+    def get_phase(self,k, h):
+        """Get the phase from the DMRG transition lines"""
+        # If under the Ising Transition Line (Left side)
+        if k < .5 and h < self.ising_transition(k):
+            return 0 # Ferromagnetic
+        # If under the Kosterlitz-Thouless Transition Line (Right side)
+
+        elif k > .5 and h < self.kt_transition(k):
+            return 1 # Antiphase
+        return 2 # else i
+    
+
+    def kt_transition(self,k):
+        """Kosterlitz-Thouless transition line"""
+        return 1.05 * np.sqrt((k - 0.5) * (k - 0.1))
+
+    def ising_transition(self,k):
+        """Ising transition line"""
+        return np.where(k == 0, 1, (1 - k) * (1 - np.sqrt((1 - 3 * k + 4 * k**2) / (1 - k))) / np.maximum(k, 1e-9))
+
+    def bkt_transition(self,k):
+        """Floating Phase transition line"""
+        return 1.05 * (k - 0.5)
+
     def train_VQE(self, epochs=3000, learning_rate=0.151315, scheduler_patience=12, scheduler_factor=0.75816, optimizer_choice="Adam", with_scheduler=True, optuna_trial=True):
         
+        phase=self.get_phase(self.k, self.h)
+
+        if(phase==0):
+            starting_state,_=calc_state(self.n,0,0)
+        elif(phase==1):
+            starting_state,_=calc_state(self.n,1,0)
+        else:
+            starting_state,_=calc_state(self.n,0,2)
+        starting_state=torch.tensor(starting_state,dtype=torch.complex128)
+
         # various variables to keep track of what is happening to the model
         best_energy = float('inf')
         best_params = self.parameters_vqe.detach().clone()
@@ -124,8 +162,8 @@ class VQE:
             optimizer.zero_grad()
             
             # Use the pre-initialized qnode to measure in both Z and X bases (with shots)
-            probs_z = self.qnode(self.parameters_vqe, basis="Z")
-            probs_x = self.qnode(self.parameters_vqe, basis="X")
+            probs_z = self.qnode(self.parameters_vqe, basis="Z", starting_state=starting_state)
+            probs_x = self.qnode(self.parameters_vqe, basis="X", starting_state=starting_state)
             
             # Compute energy from shot-based probabilities
             energy = self._compute_energy_from_probs(probs_z, probs_x)
@@ -194,15 +232,15 @@ class VQE:
 
         # Nearest Neighbor XX interactions
         for i in range(self.n - 1):
-            energy -= self.j * sum(self.eigenvalues_nn[i] * probs_x)
+            energy += self.j * sum(self.eigenvalues_nn[i] * probs_x)
         
         # Next-Nearest Neighbor XX interactions
         for i in range(self.n - 2):
-            energy += self.k * sum(self.eigenvalues_nnn[i] * probs_x)
+            energy -= self.k * sum(self.eigenvalues_nnn[i] * probs_x)
             
         # Transverse Field Z interactions
         for i in range(self.n):
-            energy -= self.h * sum(self.eigenvalues_z[i] * probs_z)
+            energy += self.h * sum(self.eigenvalues_z[i] * probs_z)
 
         return energy
     
@@ -228,7 +266,7 @@ if __name__ == "__main__":
     h=0.5
     #manual_seed(42)
     # Note: For 2 qubits, next-nearest neighbor (k) doesn't exist, which is fine.
-    vqe = VQE(n_wires=n_qubits, n_layers=68, k=k, h=h, shots=None, noise=True)  
+    vqe = VQE(n_wires=n_qubits, n_layers=68, k=k, h=h, shots=None, noise=False)  
     best_energy, best_epoch, last_epoch, energy_history, lr_history = vqe.train_VQE()  
 
     import energy
