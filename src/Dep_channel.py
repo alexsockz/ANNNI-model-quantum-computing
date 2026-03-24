@@ -5,7 +5,7 @@ from jax import numpy as jnp
 import optax
 
 from pennylane import numpy as pnp
-# from pennylane import DepolarizingChannel   # non più usato
+from pennylane import DepolarizingChannel
 
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap, BoundaryNorm
@@ -20,7 +20,7 @@ side = 20     # Discretization of the Phase Diagram
 
 answer = input("noise y or n?").lower().strip()
 if answer == "y":
-    noise_strength = 0.70 # probabilità di bit‑flip
+    noise_strength = 0.74
 elif answer == "n":
     noise_strength = None
 
@@ -174,7 +174,7 @@ fig,ax = qml.draw_mpl(qcnn_circuit)(np.arange(num_params), psis[0,0])
 
 
 def qcnn_ansatz_noisy(num_qubits, params):
-    """Ansatz of the QCNN model with bit‑flip noise
+    """Ansatz of the QCNN model
     Repetitions of the convolutional and pooling blocks
     until only 2 wires are left unmeasured
     """
@@ -186,12 +186,19 @@ def qcnn_ansatz_noisy(num_qubits, params):
         else:
             groups = wires[:-1].reshape(-1, 2)
             qml.RY(params[index], wires=int(wires[-1]))
+            if answer == "y":
+                qml.DepolarizingChannel(noise_strength, wires=int(wires[-1]))
             index += 1
 
         for group in groups:
             qml.CNOT(wires=[int(group[0]), int(group[1])])
+            if answer == "y":
+                qml.DepolarizingChannel(noise_strength, wires=int(group[0]))
+                qml.DepolarizingChannel(noise_strength, wires=int(group[1]))
             for wire in group:
                 qml.RY(params[index], wires=int(wire))
+                if answer == "y":
+                    qml.DepolarizingChannel(noise_strength, wires=int(wire))
                 index += 1
         return index
 
@@ -203,11 +210,15 @@ def qcnn_ansatz_noisy(num_qubits, params):
             qml.cond(m_0 == 0, qml.RX)(params[index], wires=int(wire))
             qml.cond(m_0 == 1, qml.RX)(params[index + 1], wires=int(wire))
             # Dopo le RX condizionali, aggiungiamo rumore sui qubit ancora attivi
+            if answer == "y":
+                qml.DepolarizingChannel(noise_strength, wires=int(wire))
             index += 2
             wires = np.delete(wires, np.where(wires == wire_pool))
 
         if len(wires) % 2 != 0:
             qml.RX(params[index], wires=int(wires[-1]))
+            if answer == "y":
+                qml.DepolarizingChannel(noise_strength, wires=int(wires[-1]))
             index += 1
         return index, wires
 
@@ -215,13 +226,11 @@ def qcnn_ansatz_noisy(num_qubits, params):
     active_wires = np.arange(num_qubits)
     index = 0
 
-    # Layer of bitflips
-    for wire in active_wires:
-        qml.BitFlip(noise_strength, wires=int(wire))
-
     # Initial layer: apply RY to all wires.
     for wire in active_wires:
         qml.RY(params[index], wires=int(wire))
+        if answer == "y":
+            qml.DepolarizingChannel(noise_strength, wires=int(wire))
         index += 1
 
     # Repeatedly apply convolution and pooling until there are 2 unmeasured wires
@@ -233,6 +242,8 @@ def qcnn_ansatz_noisy(num_qubits, params):
     # Final layer: apply RY to the remaining active wires.
     for wire in active_wires:
         qml.RY(params[index], wires=int(wire))
+        if answer == "y":
+            qml.DepolarizingChannel(noise_strength, wires=int(wire))
         index += 1
     return index, active_wires
 
@@ -357,6 +368,6 @@ for color, phase in zip(colors, phase_labels[:-1]):
 plt.plot([], [], 'k', label='Transition lines')
 
 plt.xlabel("k"), plt.ylabel("h")
-plt.title("Figure 5. QCNN Classification with Bit‑Flip Noise")
+plt.title("Figure 5. QCNN Classification")
 plt.legend()
 plt.show()

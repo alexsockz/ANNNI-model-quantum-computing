@@ -17,7 +17,7 @@ side = 20      # Discretization of the Phase Diagram
 
 answer = input("noise y or n?").lower().strip()
 if answer == "y":
-    noise_strength = 0.75
+    noise_strength = 0.10
 elif answer == "n":
     noise_strength = None
 
