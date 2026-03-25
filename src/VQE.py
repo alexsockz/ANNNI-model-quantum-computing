@@ -21,7 +21,7 @@ class VQE:
         
         # 1. Device Selection for better performances depending on available devices on computer
         #qubit = cpu
-        if self.noise:
+        if self.noise==True:
             noise_model = NoiseModel()
             error = depolarizing_error(0.01, 1)  # 1-qubit depolarizing
             noise_model.add_all_qubit_quantum_error(error, ['u1', 'u2', 'u3'])
@@ -117,17 +117,22 @@ class VQE:
         """Floating Phase transition line"""
         return 1.05 * (k - 0.5)
 
-    def train_VQE(self, epochs=3000, learning_rate=0.151315, scheduler_patience=12, scheduler_factor=0.75816, optimizer_choice="Adam", with_scheduler=True, optuna_trial=True):
+    def train_VQE(self, epochs=3000, learning_rate=0.151315, scheduler_patience=12, scheduler_factor=0.75816, optimizer_choice="Adam", with_scheduler=True, non_zero_state=False):
         
         phase=self.get_phase(self.k, self.h)
 
-        if(phase==0):
-            starting_state,_=calc_state(self.n,0,0)
-        elif(phase==1):
-            starting_state,_=calc_state(self.n,1,0)
-        else:
-            starting_state,_=calc_state(self.n,0,2)
-        starting_state=torch.tensor(starting_state,dtype=torch.complex128)
+        starting_state=None
+        if (non_zero_state==True):
+            if(phase==0):
+                starting_state,phase2=calc_state(self.n,0,0)
+                print(f"{phase}{phase2}")
+            elif(phase==1):
+                starting_state,phase2=calc_state(self.n,1,0)
+                print(f"{phase}{phase2}")
+            else:
+                starting_state,phase2=calc_state(self.n,0,2)
+                print(f"{phase}{phase2}")
+            starting_state=torch.tensor(starting_state,dtype=torch.complex128)
 
         # various variables to keep track of what is happening to the model
         best_energy = float('inf')
@@ -232,15 +237,15 @@ class VQE:
 
         # Nearest Neighbor XX interactions
         for i in range(self.n - 1):
-            energy += self.j * sum(self.eigenvalues_nn[i] * probs_x)
+            energy -= self.j * sum(self.eigenvalues_nn[i] * probs_x)
         
         # Next-Nearest Neighbor XX interactions
         for i in range(self.n - 2):
-            energy -= self.k * sum(self.eigenvalues_nnn[i] * probs_x)
+            energy += self.k * sum(self.eigenvalues_nnn[i] * probs_x)
             
         # Transverse Field Z interactions
         for i in range(self.n):
-            energy += self.h * sum(self.eigenvalues_z[i] * probs_z)
+            energy -= self.h * sum(self.eigenvalues_z[i] * probs_z)
 
         return energy
     
@@ -262,12 +267,12 @@ if __name__ == "__main__":
     print("start")
     t1 = perf_counter()
     n_qubits=6
-    k=0.2
+    k=0.5
     h=0.5
     #manual_seed(42)
     # Note: For 2 qubits, next-nearest neighbor (k) doesn't exist, which is fine.
-    vqe = VQE(n_wires=n_qubits, n_layers=68, k=k, h=h, shots=None, noise=False)  
-    best_energy, best_epoch, last_epoch, energy_history, lr_history = vqe.train_VQE()  
+    vqe = VQE(n_wires=n_qubits, n_layers=9, k=k, h=h, shots=None, noise=False)  
+    best_energy, best_epoch, last_epoch, energy_history, lr_history = vqe.train_VQE(non_zero_state=False)  
 
     import energy
     print(energy.theoretical_energy(n_qubits,k,h))

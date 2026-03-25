@@ -49,12 +49,13 @@ def run_trial(trial):
     
     #n_shots = trial.suggest_categorical("n_shots", [100, 1000, 10000])
     #SETTING IT TO NONE FOR TIME IT WOULD BE MORE CORRECT TO HAVE IT WITH SET NUMBER OF SHOTS
-    n_shots=1000
+    n_shots=None
     
     # Suggesting from a range is often better than a fixed list
     learning_rate = trial.suggest_float("learning_rate", 8e-2, 6e-1, log=True)
     schedule_factor = trial.suggest_float("schedule_factor", 0.2, 0.8)
     schedule_patience = trial.suggest_int("schedule_patience", 5, 14)
+    state_or_not = trial.suggest_categorical("non_zero_state", [True, False])
     
     # #ATTEMPT AT MAKING IT IN REALTION TO THE SCHEDULE
     # patience_center = int(5 + 11 * ((1 - schedule_factor)**2))
@@ -83,12 +84,13 @@ def run_trial(trial):
             patience= 30,  
             param_init=init_type)
           
-        best_energy, best_epoch, _, _, _= vqe.train_VQE( epochs = 1000,
+        best_energy, best_epoch, _, _, _= vqe.train_VQE( epochs = 3000,
                                 learning_rate = learning_rate,
                                 scheduler_patience = schedule_patience,
                                 scheduler_factor = schedule_factor,
                                 optimizer_choice = "Adam",
-                                with_scheduler = True)  
+                                with_scheduler = True,
+                                non_zero_state=state_or_not)  
         energies_error.append(float(abs((best_energy - theoretical_energy[h_selected,k_selected]) / theoretical_energy[h_selected,k_selected])))
         epochs_list.append(best_epoch)
 
@@ -97,9 +99,9 @@ def run_trial(trial):
     std_energy = np.std(energies_error)
     mean_epoch = np.mean(epochs_list)
 
-    trial.set_user_attr("my_variable", theoretical_energy[h_selected,k_selected])
-    trial.set_user_attr("k_selected", ks[k_selected])
-    trial.set_user_attr("h_selected", hs[h_selected])
+    # trial.set_user_attr("my_variable", theoretical_energy[h_selected,k_selected])
+    # trial.set_user_attr("k_selected", ks[k_selected])
+    # trial.set_user_attr("h_selected", hs[h_selected])
 
 
     return float(mean_enery_error), float(std_energy), float(mean_epoch)
@@ -123,21 +125,12 @@ theoretical_energy=np.empty((len(ks), len(hs)), dtype=float)
 
 if __name__ == "__main__":
 
-    n_trials=6
+    n_trials=7
     pbar = tqdm(total=n_trials, desc="Optimizing VQE") # Match total to n_trials
     #torch.manual_seed(42)    
 
-    # list_n_qubits=[4, 6, 8, 12]
-    # list_ansatz_depth=[2, 4, 6, 9] # paper says 6(9)
-    # list_n_shots=[100, 1000, 10000]
-    # list_param_init=[None,0,np.pi]
-    # list_schedule_patience=[3,5,7,10]
-    # list_schedule_factor=[0.1,0.3,0.5,0.7,0.8,0.9]
-    # list_learning_rate=[0.001, 0.01, 0.05, 0.07, 0.1]
-    # list_optimizers=["ASGD", "Adam"]
-
     #train_VQE( epochs=100, learning_rate=0.01, scheduler_patience=5, scheduler_factor=0.8, optimizer_choice="Adam", with_scheduler=True)
-
+    t1=perf_counter()
     def update_pbar(study, trial):
         pbar.update(1)
 
@@ -168,7 +161,7 @@ if __name__ == "__main__":
 
     # 2. CREATE STUDY
     study = optuna.create_study(
-        study_name="vqe_search_v5_with_random_kh",
+        study_name="vqe_search_v5_with_random_kh_beginning_state_shots_none",
         storage=storage_url,
         directions=["minimize", "minimize", "minimize"],
         pruner=optuna.pruners.MedianPruner(),
