@@ -7,6 +7,15 @@ import numpy as np
 from qiskit_aer.noise import NoiseModel, depolarizing_error
 from qiskit_aer import AerSimulator
 from ground_state_at_borders import calc_state
+import os
+
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
+os.environ["JAX_PLATFORM_NAME"] = "cpu"
+os.environ["JAX_QUIET_STARTUP"] = "1"
+os.environ["OMP_NUM_THREADS"] = "1"
+
+
+# config.update("jax_enable_x64", True)
 
 class VQE:
     def __init__(self, n_wires, n_layers, k, h, j=1, shots=1000, patience=30, param_init:str="random", noise=False): #supervised=true
