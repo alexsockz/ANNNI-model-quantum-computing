@@ -6,6 +6,8 @@ torch
 pennylane-lightning-gpu
 optuna
 optuna-dashboard
+plotly
+pennylane-qiskit
 nvidia-pyindex
 nvidia-cudnn
-plotly
+
