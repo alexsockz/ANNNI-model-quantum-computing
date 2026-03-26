@@ -1,0 +1,10 @@
+{
+  "k": 0,
+  "h": 0,
+  "n_qubits": 8,
+  "n_layers": 9,
+  "vqe_energy": -6.999994458646126,
+  "theoretical_energy": -6.999996185302734,
+  "relative_error": 2.466653642508925e-07,
+  "best_epoch": 210
+}
