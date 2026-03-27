@@ -393,19 +393,29 @@ if answer == "y":
         return vmap(circ, in_axes=(None, 0))
 
 
-    scales = [1.0, 1.5, 2.0]
+    scales = np.arange(1.0, 2.05, 0.05)
+
     vmap_circs = [make_vectorized_circuit(s) for s in scales]
 
-    # ------------------------------------------------------------------
-    # 3. Calcola le aspettazioni per tutte le scale
-    # ------------------------------------------------------------------
+
+    # Calcola le aspettazioni per tutte le scale
+
     states_batch = psis.reshape(-1, 2 ** num_qubits)  # shape (400, 256)
     exp_by_scale = []
     for vcirc in vmap_circs:
         exps = vcirc(trained_anomaly_params, states_batch)  # shape (400, n_trash)
         exp_by_scale.append(exps)
 
-    exp_mitigated = extrapolate_points(exp_by_scale[0], exp_by_scale[1], exp_by_scale[2], scales)
+    exp_mitigated = extrapolate_points(
+        exps_by_scale[0], exps_by_scale[1], exps_by_scale[2],
+        exps_by_scale[3], exps_by_scale[4], exps_by_scale[5],
+        exps_by_scale[6], exps_by_scale[7], exps_by_scale[8],
+        exps_by_scale[9], exps_by_scale[10], exps_by_scale[11],
+        exps_by_scale[12], exps_by_scale[13], exps_by_scale[14],
+        exps_by_scale[15], exps_by_scale[16], exps_by_scale[17],
+        exps_by_scale[18], exps_by_scale[19], exps_by_scale[20],
+        scales=scales
+    )
 
     # Evaluate the compression score for each state in the phase diagram
     compressions = jnp.mean(1 - jnp.array(exp_mitigated), axis=0)

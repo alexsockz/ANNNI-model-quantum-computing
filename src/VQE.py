@@ -6,9 +6,23 @@ import torch.nn as nn
 import numpy as np
 from qiskit_aer.noise import NoiseModel, depolarizing_error
 from qiskit_aer import AerSimulator
+from ground_state_at_borders import calc_state
+import os
+from time import perf_counter
+import torch
+import json
+import energy
+
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
+os.environ["JAX_PLATFORM_NAME"] = "cpu"
+os.environ["JAX_QUIET_STARTUP"] = "1"
+os.environ["OMP_NUM_THREADS"] = "1"
+
+
+# config.update("jax_enable_x64", True)
 
 class VQE:
-    def __init__(self, n_wires, n_layers, k, h, j=1, shots=1000, patience=30, param_init:str="random", noise=False):
+    def __init__(self, n_wires, n_layers, k, h, j=1, shots=1000, patience=30, param_init:str="random", noise=False): #supervised=true
         self.n = n_wires
         self.m = n_layers
         self.k = k
@@ -20,7 +34,7 @@ class VQE:
         
         # 1. Device Selection for better performances depending on available devices on computer
         #qubit = cpu
-        if self.noise:
+        if self.noise==True:
             noise_model = NoiseModel()
             error = depolarizing_error(0.01, 1)  # 1-qubit depolarizing
             noise_model.add_all_qubit_quantum_error(error, ['u1', 'u2', 'u3'])
@@ -57,6 +71,16 @@ class VQE:
             self.parameters_vqe = nn.Parameter(full((self.m, self.n),np.pi), requires_grad=True)
         elif param_init=="small_random":
             self.parameters_vqe = nn.Parameter(rand((self.m, self.n)) * 0.01, requires_grad=True)
+        elif param_init=="precalc":
+            phase = self.get_phase(self.k, self.h)
+            if phase == 0:
+                file_name = "vqe_params_k0_h0.pt"
+            elif phase == 1:
+                file_name = "vqe_params_k1_h0.pt"
+            else:
+                file_name = "vqe_params_k0_h2.pt"
+            loaded_params = torch.load(file_name, weights_only=True)
+            self.parameters_vqe = nn.Parameter(loaded_params, requires_grad=True)
 
         # Pre-calculate bitstrings for the 2^n states in bigendian order
         self.bitstrings = tensor([[(i >> (self.n - 1 - j)) & 1 for j in range(self.n)] for i in range(2**self.n)], dtype=torch.float64)
@@ -77,7 +101,10 @@ class VQE:
     # Using 'probs' is often more stable for gradients than 'counts', 
     # but it represents the exact same hardware reality (sampling). 
     # using expvalue is irrealistic since you don't have access to the computed matrix   
-    def _train_circuit(self, params, basis="Z"):
+    def _train_circuit(self, params, basis="Z",starting_state=None):
+
+        if(starting_state!=None):
+            qml.StatePrep(starting_state, wires=range(self.n), normalize = True)
         # The ansatz must be purely gate operations
         self.ansatz(params)
         
@@ -88,9 +115,48 @@ class VQE:
         
         # Measure in computational basis after basis rotation
         return qml.probs(wires=range(self.n))        
+    
+    def get_phase(self,k, h):
+        """Get the phase from the DMRG transition lines"""
+        # If under the Ising Transition Line (Left side)
+        if k < .5 and h < self.ising_transition(k):
+            return 0 # Ferromagnetic
+        # If under the Kosterlitz-Thouless Transition Line (Right side)
+
+        elif k > .5 and h < self.kt_transition(k):
+            return 1 # Antiphase
+        return 2 # else i
+    
+
+    def kt_transition(self,k):
+        """Kosterlitz-Thouless transition line"""
+        return 1.05 * np.sqrt((k - 0.5) * (k - 0.1))
+
+    def ising_transition(self,k):
+        """Ising transition line"""
+        return np.where(k == 0, 1, (1 - k) * (1 - np.sqrt((1 - 3 * k + 4 * k**2) / (1 - k))) / np.maximum(k, 1e-9))
+
+    def bkt_transition(self,k):
+        """Floating Phase transition line"""
+        return 1.05 * (k - 0.5)
+
+    def train_VQE(self, epochs=3000, learning_rate=0.151315, scheduler_patience=12, scheduler_factor=0.75816, optimizer_choice="Adam", with_scheduler=True, non_zero_state=False):
         
-    def train_VQE(self, epochs=3000, learning_rate=0.151315, scheduler_patience=12, scheduler_factor=0.75816, optimizer_choice="Adam", with_scheduler=True, optuna_trial=True):
-        
+        phase=self.get_phase(self.k, self.h)
+
+        starting_state=None
+        if (non_zero_state==True):
+            if(phase==0):
+                starting_state,phase2=calc_state(self.n,0,0)
+                print(f"{phase}{phase2}")
+            elif(phase==1):
+                starting_state,phase2=calc_state(self.n,1,0)
+                print(f"{phase}{phase2}")
+            else:
+                starting_state,phase2=calc_state(self.n,0,2)
+                print(f"{phase}{phase2}")
+            starting_state=torch.tensor(starting_state,dtype=torch.complex128)
+
         # various variables to keep track of what is happening to the model
         best_energy = float('inf')
         best_params = self.parameters_vqe.detach().clone()
@@ -124,8 +190,8 @@ class VQE:
             optimizer.zero_grad()
             
             # Use the pre-initialized qnode to measure in both Z and X bases (with shots)
-            probs_z = self.qnode(self.parameters_vqe, basis="Z")
-            probs_x = self.qnode(self.parameters_vqe, basis="X")
+            probs_z = self.qnode(self.parameters_vqe, basis="Z", starting_state=starting_state)
+            probs_x = self.qnode(self.parameters_vqe, basis="X", starting_state=starting_state)
             
             # Compute energy from shot-based probabilities
             energy = self._compute_energy_from_probs(probs_z, probs_x)
@@ -217,25 +283,89 @@ class VQE:
             for i in range(self.n):
                 qml.CNOT(wires=[i, (i + 1) % self.n])
 
-if __name__ == "__main__":
-    from time import perf_counter
+def train_config_worker(k, h, n_qubits, n_layers):
+    stop = False
+    best_energy = 0
+    theoretical_energy = 0
+    relative_error = float('inf')
+    best_epoch = 0
+    
+    attempt = 0
+    max_attempts = 5 # Prevent infinite loops
+    
+    while not stop and attempt < max_attempts:
+        attempt += 1
+        vqe = VQE(n_wires=n_qubits, n_layers=n_layers, k=k, h=h, shots=None, noise=False)
+        
+        print(f"\n{'='*50}")
+        print(f"[{os.getpid()}] Training VQE with k={k}, h={h} | Attempt {attempt}/{max_attempts}")
+        print(f"{'='*50}")
+        
+        best_energy, best_epoch, last_epoch, energy_history, lr_history = vqe.train_VQE(non_zero_state=False)
+        
+        # safely extract scalar to a standard python float
+        theoretic = float(energy.theoretical_energy(n_qubits, k, h))
+        
+        if abs(theoretic) > 1e-9:
+            err = abs((best_energy - theoretic) / theoretic)
+        else:
+            err = abs(best_energy - theoretic)
+            
+        print(f"[{os.getpid()}] VQE Energy: {best_energy:.6f} (k={k}, h={h})")
+        print(f"[{os.getpid()}] Theoretical Energy: {theoretic:.6f}")
+        print(f"[{os.getpid()}] Relative Error: {err:.6%}")
+        
+        if err < 0.002:
+            stop = True
+            print(f"[{os.getpid()}] Error is small enough for k={k}, h={h}.")
+        else:
+            print(f"[{os.getpid()}] Error {err:.6%} is still too high. Retrying...")
+            
+    if not stop:
+        print(f"[{os.getpid()}] Warning: Reached max attempts ({max_attempts}) without hitting error threshold for k={k}, h={h}.")
 
-    # manual_seed(42)
+    filename = f"vqe_params_k{k}_h{h}.pt"
+    torch.save(vqe.parameters_vqe.detach(), filename)
+    print(f"[{os.getpid()}] ✓ Saved parameters to {filename}")
+    
+    # Save metadata
+    metadata = {
+        "k": k,
+        "h": h,
+        "n_qubits": n_qubits,
+        "n_layers": n_layers,
+        "vqe_energy": float(best_energy),
+        "theoretical_energy": float(theoretic),
+        "relative_error": float(err),
+        "best_epoch": int(best_epoch)
+    }
+    metadata_file = f"vqe_metadata_k{k}_h{h}.json"
+    with open(metadata_file, 'w') as f:
+        json.dump(metadata, f, indent=2)
+    print(f"[{os.getpid()}] ✓ Saved metadata to {metadata_file}")
+    
+    return metadata
+
+if __name__ == "__main__":
+    import multiprocessing as mp
+
     print("start")
     t1 = perf_counter()
-    n_qubits=6
-    k=0.2
-    h=0.5
-    #manual_seed(42)
-    # Note: For 2 qubits, next-nearest neighbor (k) doesn't exist, which is fine.
-    vqe = VQE(n_wires=n_qubits, n_layers=68, k=k, h=h, shots=None, noise=True)  
-    best_energy, best_epoch, last_epoch, energy_history, lr_history = vqe.train_VQE()  
 
-    import energy
-    print(energy.theoretical_energy(n_qubits,k,h))
-    import matplotlib.pyplot as plt
+    n_qubits = 8
+    n_layers = 9
+    configs = [(0, 0),(1,0),(0, 2)]
 
-    plt.plot(energy_history)
-    plt.savefig("qve.png")
-    print(f"\nFinal Ground State Energy: {best_energy:.6f}")
+    worker_args = [(k, h, n_qubits, n_layers) for (k, h) in configs]
+    num_workers = min(len(configs), mp.cpu_count())
+    
+    print(f"Running multiprocessing with {num_workers} workers...")
+    
+    # Using 'spawn' context can sometimes help prevent issues with PyTorch/JAX multiprocessing in Linux
+    mp.set_start_method('spawn', force=True)
+    
+    with mp.Pool(processes=num_workers) as pool:
+        results = pool.starmap(train_config_worker, worker_args)
+        
+    print(f"\nAll configurations processed.")
     print(f"Total time: {perf_counter() - t1:.2f}s")
