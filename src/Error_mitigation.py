@@ -20,7 +20,7 @@ side = 20     # Discretization of the Phase Diagram
 
 answer = input("noise y or n?").lower().strip()
 if answer == "y":
-    noise_strength = 0.10
+    noise_strength = 0.15
 elif answer == "n":
     noise_strength = None
 
@@ -372,172 +372,172 @@ plt.legend()
 plt.show()
 
 
+if answer == "y":
+    def qcnn_ansatz_scaled(num_qubits, params, scale):
+        """Restituisce le probabilità per un dato stato e un fattore di scala del rumore."""
+        # Crea un device misto con lo stesso numero di qubit
+        dev_scaled = qml.device("default.mixed", wires=num_qubits)
 
-def qcnn_ansatz_scaled(num_qubits, params, scale):
-    """Restituisce le probabilità per un dato stato e un fattore di scala del rumore."""
-    # Crea un device misto con lo stesso numero di qubit
-    dev_scaled = qml.device("default.mixed", wires=num_qubits)
+        # Convolution block
+        def conv(wires, params, index):
+            if len(wires) % 2 == 0:
+                groups = wires.reshape(-1, 2)
+            else:
+                groups = wires[:-1].reshape(-1, 2)
+                qml.RY(params[index], wires=int(wires[-1]))
+                if answer == "y":
+                    qml.DepolarizingChannel(noise_strength * scale, wires=int(wires[-1]))
+                index += 1
 
-    # Convolution block
-    def conv(wires, params, index):
-        if len(wires) % 2 == 0:
-            groups = wires.reshape(-1, 2)
-        else:
-            groups = wires[:-1].reshape(-1, 2)
-            qml.RY(params[index], wires=int(wires[-1]))
-            if answer == "y":
-                qml.DepolarizingChannel(noise_strength * scale, wires=int(wires[-1]))
-            index += 1
+            for group in groups:
+                qml.CNOT(wires=[int(group[0]), int(group[1])])
+                if answer == "y":
+                    qml.DepolarizingChannel(noise_strength * scale, wires=int(group[0]))
+                    qml.DepolarizingChannel(noise_strength * scale, wires=int(group[1]))
+                for wire in group:
+                    qml.RY(params[index], wires=int(wire))
+                    if answer == "y":
+                        qml.DepolarizingChannel(noise_strength * scale, wires=int(wire))
+                    index += 1
+            return index
 
-        for group in groups:
-            qml.CNOT(wires=[int(group[0]), int(group[1])])
-            if answer == "y":
-                qml.DepolarizingChannel(noise_strength * scale, wires=int(group[0]))
-                qml.DepolarizingChannel(noise_strength * scale, wires=int(group[1]))
-            for wire in group:
-                qml.RY(params[index], wires=int(wire))
+        # Pooiling block
+        def pool(wires, params, index):
+            for wire_pool, wire in zip(wires[0::2], wires[1::2]):
+                m_0 = qml.measure(int(wire_pool))
+                # Nota: dopo una misura non mettiamo rumore perché lo stato è collassato
+                qml.cond(m_0 == 0, qml.RX)(params[index], wires=int(wire))
+                qml.cond(m_0 == 1, qml.RX)(params[index + 1], wires=int(wire))
+                # Dopo le RX condizionali, aggiungiamo rumore sui qubit ancora attivi
                 if answer == "y":
                     qml.DepolarizingChannel(noise_strength * scale, wires=int(wire))
-                index += 1
-        return index
+                index += 2
+                wires = np.delete(wires, np.where(wires == wire_pool))
 
-    # Pooiling block
-    def pool(wires, params, index):
-        for wire_pool, wire in zip(wires[0::2], wires[1::2]):
-            m_0 = qml.measure(int(wire_pool))
-            # Nota: dopo una misura non mettiamo rumore perché lo stato è collassato
-            qml.cond(m_0 == 0, qml.RX)(params[index], wires=int(wire))
-            qml.cond(m_0 == 1, qml.RX)(params[index + 1], wires=int(wire))
-            # Dopo le RX condizionali, aggiungiamo rumore sui qubit ancora attivi
+            if len(wires) % 2 != 0:
+                qml.RX(params[index], wires=int(wires[-1]))
+                if answer == "y":
+                    qml.DepolarizingChannel(noise_strength * scale, wires=int(wires[-1]))
+                index += 1
+            return index, wires
+
+        # Initialize active wires and parameter index.
+        active_wires = np.arange(num_qubits)
+        index = 0
+
+        # Initial layer: apply RY to all wires.
+        for wire in active_wires:
+            qml.RY(params[index], wires=int(wire))
             if answer == "y":
                 qml.DepolarizingChannel(noise_strength * scale, wires=int(wire))
-            index += 2
-            wires = np.delete(wires, np.where(wires == wire_pool))
-
-        if len(wires) % 2 != 0:
-            qml.RX(params[index], wires=int(wires[-1]))
-            if answer == "y":
-                qml.DepolarizingChannel(noise_strength * scale, wires=int(wires[-1]))
             index += 1
-        return index, wires
 
-    # Initialize active wires and parameter index.
-    active_wires = np.arange(num_qubits)
-    index = 0
+        # Repeatedly apply convolution and pooling until there are 2 unmeasured wires
+        while len(active_wires) > 2:
+            index = conv(active_wires, params, index)
+            index, active_wires = pool(active_wires, params, index)
+            qml.Barrier()
 
-    # Initial layer: apply RY to all wires.
-    for wire in active_wires:
-        qml.RY(params[index], wires=int(wire))
-        if answer == "y":
-            qml.DepolarizingChannel(noise_strength * scale, wires=int(wire))
-        index += 1
+        # Final layer: apply RY to the remaining active wires.
+        for wire in active_wires:
+            qml.RY(params[index], wires=int(wire))
+            if answer == "y":
+                qml.DepolarizingChannel(noise_strength * scale, wires=int(wire))
+            index += 1
+        return index, active_wires
 
-    # Repeatedly apply convolution and pooling until there are 2 unmeasured wires
-    while len(active_wires) > 2:
-        index = conv(active_wires, params, index)
-        index, active_wires = pool(active_wires, params, index)
-        qml.Barrier()
+    def qcnn_with_scaled_noise(params, state, scale):
+        """Restituisce le probabilità per un dato stato e un fattore di scala del rumore."""
+        # Crea un device misto con lo stesso numero di qubit
+        dev_scaled = qml.device("default.mixed", wires=num_qubits)
 
-    # Final layer: apply RY to the remaining active wires.
-    for wire in active_wires:
-        qml.RY(params[index], wires=int(wire))
-        if answer == "y":
-            qml.DepolarizingChannel(noise_strength * scale, wires=int(wire))
-        index += 1
-    return index, active_wires
+        @qml.qnode(dev_scaled)
+        def circuit(params, state):
+            qml.StatePrep(state, wires=range(num_qubits), normalize=True)
+            # Usa una versione della ansatz in cui la forza del rumore è moltiplicata per scale
+            _, output_wires = qcnn_ansatz_scaled(num_qubits, params, scale)
+            return qml.probs([int(k) for k in output_wires])
 
-def qcnn_with_scaled_noise(params, state, scale):
-    """Restituisce le probabilità per un dato stato e un fattore di scala del rumore."""
-    # Crea un device misto con lo stesso numero di qubit
-    dev_scaled = qml.device("default.mixed", wires=num_qubits)
-
-    @qml.qnode(dev_scaled)
-    def circuit(params, state):
-        qml.StatePrep(state, wires=range(num_qubits), normalize=True)
-        # Usa una versione della ansatz in cui la forza del rumore è moltiplicata per scale
-        _, output_wires = qcnn_ansatz_scaled(num_qubits, params, scale)
-        return qml.probs([int(k) for k in output_wires])
-
-    return circuit(params, state)
+        return circuit(params, state)
 
 
-def extrapolate_linear_3points(probs_1x, probs_2x, probs_3x, scales):
-    """
-    Estrapola linearmente a rumore zero usando i tre punti.
-    Restituisce probabilità mitigate di forma (N, C).
-    """
-    p1 = np.asarray(probs_1x)
-    p2 = np.asarray(probs_2x)
-    p3 = np.asarray(probs_3x)
-    N, C = p1.shape
-    probs_mit = np.zeros((N, C))
+    def extrapolate_linear_3points(probs_1x, probs_2x, probs_3x, scales):
+        """
+        Estrapola linearmente a rumore zero usando i tre punti.
+        Restituisce probabilità mitigate di forma (N, C).
+        """
+        p1 = np.asarray(probs_1x)
+        p2 = np.asarray(probs_2x)
+        p3 = np.asarray(probs_3x)
+        N, C = p1.shape
+        probs_mit = np.zeros((N, C))
 
-    for i in range(N):
-        for j in range(C):
-            y = [p1[i, j], p2[i, j], p3[i, j]]
-            coeffs = np.polyfit(scales, y, 1)  # coeffs = [pendenza, intercetta]
-            probs_mit[i, j] = coeffs[1]  # intercetta a x=0
+        for i in range(N):
+            for j in range(C):
+                y = [p1[i, j], p2[i, j], p3[i, j]]
+                coeffs = np.polyfit(scales, y, 1)  # coeffs = [pendenza, intercetta]
+                probs_mit[i, j] = coeffs[1]  # intercetta a x=0
 
-    # Clipping e normalizzazione per ottenere probabilità valide
-    probs_mit = np.clip(probs_mit, 0, 1)
-    probs_mit /= probs_mit.sum(axis=1, keepdims=True)
-    return probs_mit
+        # Clipping e normalizzazione per ottenere probabilità valide
+        probs_mit = np.clip(probs_mit, 0, 1)
+        probs_mit /= probs_mit.sum(axis=1, keepdims=True)
+        return probs_mit
 
-# Vettorizza la funzione che calcola le probabilità per un dato scale
-vmap_qcnn_scaled = vmap(lambda state, scale: qcnn_with_scaled_noise(trained_params, state, scale),
-                        in_axes=(0, None))
+    # Vettorizza la funzione che calcola le probabilità per un dato scale
+    vmap_qcnn_scaled = vmap(lambda state, scale: qcnn_with_scaled_noise(trained_params, state, scale),
+                            in_axes=(0, None))
 
-# Lista dei fattori di scala da usare
-scales = [1.0 , 1.5, 2.0]
+    # Lista dei fattori di scala da usare
+    scales = [1.0 , 1.5, 2.0]
 
-# Calcola le probabilità per ogni scala
-probs_by_scale = []
-for s in scales:
-    if s == 1.0:
-        probs = probis
-    else:
-        probs = vmap_qcnn_scaled(psis.reshape(-1, 2**num_qubits), s)
-    probs_by_scale.append(probs)
+    # Calcola le probabilità per ogni scala
+    probs_by_scale = []
+    for s in scales:
+        if s == 1.0:
+            probs = probis
+        else:
+            probs = vmap_qcnn_scaled(psis.reshape(-1, 2**num_qubits), s)
+        probs_by_scale.append(probs)
 
 
-probs_mitigated = extrapolate_linear_3points(probs_by_scale[0], probs_by_scale[1], probs_by_scale[2], scales)
-predicted_mitclasses = np.argmax(probs_mitigated, axis=1)
+    probs_mitigated = extrapolate_linear_3points(probs_by_scale[0], probs_by_scale[1], probs_by_scale[2], scales)
+    predicted_mitclasses = np.argmax(probs_mitigated, axis=1)
 
 
 
 
-# Take the predicted classes for each point in the phase diagram
+    # Take the predicted classes for each point in the phase diagram
 
-colors = ['#80bfff', '#fff2a8',  '#80f090', '#da8080',]
-phase_labels = ["Ferromagnetic", "Antiphase", "Paramagnetic", "Trash Class",]
-cmap = ListedColormap(colors)
+    colors = ['#80bfff', '#fff2a8',  '#80f090', '#da8080',]
+    phase_labels = ["Ferromagnetic", "Antiphase", "Paramagnetic", "Trash Class",]
+    cmap = ListedColormap(colors)
 
-bounds = [-0.5, 0.5, 1.5, 2.5, 3.5]
-norm = BoundaryNorm(bounds, cmap.N)
+    bounds = [-0.5, 0.5, 1.5, 2.5, 3.5]
+    norm = BoundaryNorm(bounds, cmap.N)
 
-# Plot the predictions over the phase diagram
-plt.figure(figsize=(4,4), constrained_layout=True)
-plt.imshow(
-    predicted_mitclasses.reshape(side, side),
-    cmap=cmap,
-    norm=norm,
-    aspect="auto",
-    origin="lower",
-    extent=[0, 1, 0, 2]
-)
+    # Plot the predictions over the phase diagram
+    plt.figure(figsize=(4,4), constrained_layout=True)
+    plt.imshow(
+        predicted_mitclasses.reshape(side, side),
+        cmap=cmap,
+        norm=norm,
+        aspect="auto",
+        origin="lower",
+        extent=[0, 1, 0, 2]
+    )
 
-# Plot the transition lines (Ising and KT) for reference.
-k_vals1 = np.linspace(0.0, 0.5, 50)
-k_vals2 = np.linspace(0.5, 1.0, 50)
-plt.plot(k_vals1, ising_transition(k_vals1), 'k')
-plt.plot(k_vals2, kt_transition(k_vals2), 'k')
-plt.plot(k_vals2, bkt_transition(k_vals2), 'k', ls = '--')
+    # Plot the transition lines (Ising and KT) for reference.
+    k_vals1 = np.linspace(0.0, 0.5, 50)
+    k_vals2 = np.linspace(0.5, 1.0, 50)
+    plt.plot(k_vals1, ising_transition(k_vals1), 'k')
+    plt.plot(k_vals2, kt_transition(k_vals2), 'k')
+    plt.plot(k_vals2, bkt_transition(k_vals2), 'k', ls = '--')
 
-for color, phase in zip(colors, phase_labels[:-1]):
-    plt.scatter([], [], color=color, label=phase, edgecolors='black')
-plt.plot([], [], 'k', label='Transition lines')
+    for color, phase in zip(colors, phase_labels[:-1]):
+        plt.scatter([], [], color=color, label=phase, edgecolors='black')
+    plt.plot([], [], 'k', label='Transition lines')
 
-plt.xlabel("k"), plt.ylabel("h")
-plt.title("Figure 6. QCNN Classification mitigated")
-plt.legend()
-plt.show()
+    plt.xlabel("k"), plt.ylabel("h")
+    plt.title("Figure 6. QCNN Classification mitigated")
+    plt.legend()
+    plt.show()
