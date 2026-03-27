@@ -325,7 +325,7 @@ for ns in noise_levels:
     def qcnn_noisy_eval(params, state):
         qml.StatePrep(state, wires=range(num_qubits), normalize=True)
         _, output_wires = qcnn_ansatz_noisy(num_qubits, params, ns)
-        
+
         return qml.probs([int(k) for k in output_wires])
 
     vectorized_qcnn_noisy_eval = vmap(jit(qcnn_noisy_eval), in_axes=(None, 0))

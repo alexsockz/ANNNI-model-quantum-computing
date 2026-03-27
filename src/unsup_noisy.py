@@ -262,7 +262,7 @@ for ns in noise_levels:
         qml.StatePrep(state, wires=range(num_qubits), normalize=True)
         # Quantum Anomaly Circuit
         _, trash_wires = anomaly_noisy(num_qubits, params, ns)
-        
+
 
         return [qml.expval(qml.PauliZ(int(k))) for k in trash_wires]
 
