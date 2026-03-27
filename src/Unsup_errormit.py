@@ -202,7 +202,8 @@ def anomalynode_noisy(params, state):
     qml.StatePrep(state, wires=range(num_qubits), normalize = True)
     # Quantum Anomaly Circuit
     _, trash_wires = anomaly_noisy(num_qubits, params)
-
+    for wire in trash_wires:
+        qml.DepolarizingChannel(noise_strength, wires=wire)
     return [qml.expval(qml.PauliZ(int(k))) for k in trash_wires]
 
 
@@ -359,6 +360,9 @@ if answer == "y":
             qml.StatePrep(state, wires=range(num_qubits), normalize=True)
             # Usa una versione della ansatz in cui la forza del rumore è moltiplicata per scale
             _, trash_wires = anomaly_noisy_scaled(num_qubits, params, scale)
+            # Add depolarizing noise with scaled strength before each measurement
+            for wire in trash_wires:
+                qml.DepolarizingChannel(noise_strength * scale, wires=wire)
             return [qml.expval(qml.PauliZ(int(k))) for k in trash_wires]
 
         return circuit(params, state)
@@ -401,21 +405,12 @@ if answer == "y":
     # Calcola le aspettazioni per tutte le scale
 
     states_batch = psis.reshape(-1, 2 ** num_qubits)  # shape (400, 256)
-    exp_by_scale = []
+    exps_by_scale = []
     for vcirc in vmap_circs:
         exps = vcirc(trained_anomaly_params, states_batch)  # shape (400, n_trash)
-        exp_by_scale.append(exps)
+        exps_by_scale.append(exps)
 
-    exp_mitigated = extrapolate_points(
-        exps_by_scale[0], exps_by_scale[1], exps_by_scale[2],
-        exps_by_scale[3], exps_by_scale[4], exps_by_scale[5],
-        exps_by_scale[6], exps_by_scale[7], exps_by_scale[8],
-        exps_by_scale[9], exps_by_scale[10], exps_by_scale[11],
-        exps_by_scale[12], exps_by_scale[13], exps_by_scale[14],
-        exps_by_scale[15], exps_by_scale[16], exps_by_scale[17],
-        exps_by_scale[18], exps_by_scale[19], exps_by_scale[20],
-        scales=scales
-    )
+    exp_mitigated = extrapolate_points(exps_by_scale,scales=scales)
 
     # Evaluate the compression score for each state in the phase diagram
     compressions = jnp.mean(1 - jnp.array(exp_mitigated), axis=0)
@@ -429,7 +424,7 @@ if answer == "y":
     plt.plot([], [], 'k', label='Transition Lines')
     plt.scatter([0 + .3 / len(ks)], [0 + .5 / len(hs)], color='r', marker='x', label="Training point", s=50)
 
-    plt.legend(), plt.xlabel("k"), plt.ylabel("h"), plt.title("Figure 7. Phase diagram with QAD")
+    plt.legend(), plt.xlabel("k"), plt.ylabel("h"), plt.title("Figure 8. Mitigated phase diagram with QAD")
     cbar = plt.colorbar(im)
     cbar.set_label(r"Compression Score  $\mathcal{C}$")
     plt.show()
