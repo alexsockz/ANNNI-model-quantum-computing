@@ -4,8 +4,6 @@ from jax import jit, vmap, value_and_grad, random, config
 from jax import numpy as jnp
 import optax
 
-from pennylane import numpy as pnp
-from pennylane import DepolarizingChannel
 
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap, BoundaryNorm
@@ -205,6 +203,8 @@ def qcnn_ansatz_noisy(num_qubits, params):
     # Pooiling block
     def pool(wires, params, index):
         for wire_pool, wire in zip(wires[0::2], wires[1::2]):
+            if answer == "y":
+                qml.DepolarizingChannel(noise_strength, wires=int(wire_pool))
             m_0 = qml.measure(int(wire_pool))
             # Nota: dopo una misura non mettiamo rumore perché lo stato è collassato
             qml.cond(m_0 == 0, qml.RX)(params[index], wires=int(wire))
@@ -259,6 +259,8 @@ elif answer == "n":
 def qcnn_noisy(params, state):
     qml.StatePrep(state, wires=range(num_qubits), normalize=True)
     _, output_wires = qcnn_ansatz_noisy(num_qubits, params)
+    if answer == "y":
+        qml.DepolarizingChannel(noise_strength, wires=[int(k) for k in output_wires])
     return qml.probs([int(k) for k in output_wires])
 
 # Vectorized circuit through vmap
@@ -404,6 +406,8 @@ if answer == "y":
         # Pooiling block
         def pool(wires, params, index):
             for wire_pool, wire in zip(wires[0::2], wires[1::2]):
+                if answer == "y":
+                    qml.DepolarizingChannel(noise_strength * scale, wires=int(wire_pool))
                 m_0 = qml.measure(int(wire_pool))
                 # Nota: dopo una misura non mettiamo rumore perché lo stato è collassato
                 qml.cond(m_0 == 0, qml.RX)(params[index], wires=int(wire))
@@ -456,6 +460,8 @@ if answer == "y":
             qml.StatePrep(state, wires=range(num_qubits), normalize=True)
             # Usa una versione della ansatz in cui la forza del rumore è moltiplicata per scale
             _, output_wires = qcnn_ansatz_scaled(num_qubits, params, scale)
+            if answer == "y":
+                qml.DepolarizingChannel(noise_strength * scale, wires=[int(k) for k in output_wires])
             return qml.probs([int(k) for k in output_wires])
 
         return circuit(params, state)

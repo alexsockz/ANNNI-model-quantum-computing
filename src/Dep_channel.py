@@ -205,6 +205,8 @@ def qcnn_ansatz_noisy(num_qubits, params):
     # Pooiling block
     def pool(wires, params, index):
         for wire_pool, wire in zip(wires[0::2], wires[1::2]):
+            if answer == "y":
+                qml.DepolarizingChannel(noise_strength, wires=int(wire_pool))
             m_0 = qml.measure(int(wire_pool))
             # Nota: dopo una misura non mettiamo rumore perché lo stato è collassato
             qml.cond(m_0 == 0, qml.RX)(params[index], wires=int(wire))
@@ -249,6 +251,7 @@ def qcnn_ansatz_noisy(num_qubits, params):
 
 num_params, output_wires = qcnn_ansatz_noisy(num_qubits, [0]*100)
 
+
 if answer == "y":
     dev = qml.device("default.mixed", wires=num_qubits)
 elif answer == "n":
@@ -258,6 +261,8 @@ elif answer == "n":
 def qcnn_noisy(params, state):
     qml.StatePrep(state, wires=range(num_qubits), normalize=True)
     _, output_wires = qcnn_ansatz_noisy(num_qubits, params)
+    if answer == "y":
+        qml.DepolarizingChannel(noise_strength, wires=[int(k) for k in output_wires])
     return qml.probs([int(k) for k in output_wires])
 
 # Vectorized circuit through vmap
