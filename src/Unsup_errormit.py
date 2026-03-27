@@ -202,8 +202,7 @@ def anomalynode_noisy(params, state):
     qml.StatePrep(state, wires=range(num_qubits), normalize = True)
     # Quantum Anomaly Circuit
     _, trash_wires = anomaly_noisy(num_qubits, params)
-    for wire in trash_wires:
-        qml.DepolarizingChannel(noise_strength, wires=wire)
+
     return [qml.expval(qml.PauliZ(int(k))) for k in trash_wires]
 
 
@@ -361,8 +360,7 @@ if answer == "y":
             # Usa una versione della ansatz in cui la forza del rumore è moltiplicata per scale
             _, trash_wires = anomaly_noisy_scaled(num_qubits, params, scale)
             # Add depolarizing noise with scaled strength before each measurement
-            for wire in trash_wires:
-                qml.DepolarizingChannel(noise_strength * scale, wires=wire)
+
             return [qml.expval(qml.PauliZ(int(k))) for k in trash_wires]
 
         return circuit(params, state)

@@ -182,11 +182,7 @@ def anomaly_noisy(n_qubit, params, current_noise_strength):
         # In the final layer, only apply rotations on trash wires.
         wires_to_rot = np.arange(n_qubit) if shift < depth - 1 else trash
         for wire in wires_to_rot:
-            qml.RY(params[index], wires=int(wire))
-            if current_noise_strength > 0:
-                qml.DepolarizingChannel(current_noise_strength, wires=int(wire))
-
-            index += 1
+            qml.RY(params[index], wires=int(wire)) 
 
     return index, list(trash)
 
@@ -267,9 +263,6 @@ for ns in noise_levels:
         # Quantum Anomaly Circuit
         _, trash_wires = anomaly_noisy(num_qubits, params, ns)
         
-        if ns > 0:
-            for wire in trash_wires:
-                qml.DepolarizingChannel(ns, wires=wire)
 
         return [qml.expval(qml.PauliZ(int(k))) for k in trash_wires]
 
