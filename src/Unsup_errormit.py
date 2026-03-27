@@ -18,7 +18,7 @@ side = 20      # Discretization of the Phase Diagram
 
 answer = input("noise y or n?").lower().strip()
 if answer == "y":
-    noise_strength = 0.15
+    noise_strength = 0.35
 elif answer == "n":
     noise_strength = None
 
@@ -202,8 +202,6 @@ def anomalynode_noisy(params, state):
     qml.StatePrep(state, wires=range(num_qubits), normalize = True)
     # Quantum Anomaly Circuit
     _, trash_wires = anomaly_noisy(num_qubits, params)
-    for wire in trash_wires:
-        qml.DepolarizingChannel(noise_strength, wires=wire)
     return [qml.expval(qml.PauliZ(int(k))) for k in trash_wires]
 
 
@@ -288,10 +286,10 @@ plt.plot(np.linspace(0.5, 1.0, 50), kt_transition(np.linspace(0.5, 1.0, 50)), 'k
 plt.plot([], [], 'k', label='Transition Lines')
 plt.scatter([0 +.3/len(ks)], [0 + .5/len(hs)], color='r', marker = 'x', label="Training point", s=50)
 
-plt.legend(), plt.xlabel("k"), plt.ylabel("h"), plt.title("Figure 7. Phase diagram with QAD")
+plt.legend(), plt.xlabel("k"), plt.ylabel("h"), plt.title("Phase diagram with QAD noise (35%)")
 cbar = plt.colorbar(im)
 cbar.set_label(r"Compression Score  $\mathcal{C}$")
-plt.show()
+plt.savefig("phase_diag_QAD_noise(35%).png")
 
 
 if answer == "y":
@@ -361,8 +359,7 @@ if answer == "y":
             # Usa una versione della ansatz in cui la forza del rumore è moltiplicata per scale
             _, trash_wires = anomaly_noisy_scaled(num_qubits, params, scale)
             # Add depolarizing noise with scaled strength before each measurement
-            for wire in trash_wires:
-                qml.DepolarizingChannel(noise_strength * scale, wires=wire)
+
             return [qml.expval(qml.PauliZ(int(k))) for k in trash_wires]
 
         return circuit(params, state)
@@ -415,6 +412,7 @@ if answer == "y":
     # Evaluate the compression score for each state in the phase diagram
     compressions = jnp.mean(1 - jnp.array(exp_mitigated), axis=0)
 
+    plt.figure()
     im = plt.imshow(compressions.reshape(side, side), aspect="auto", origin="lower", extent=[0, 1, 0, 2])
 
     # Plot transition lines (assuming ising_transition and kt_transition are defined)
@@ -424,7 +422,7 @@ if answer == "y":
     plt.plot([], [], 'k', label='Transition Lines')
     plt.scatter([0 + .3 / len(ks)], [0 + .5 / len(hs)], color='r', marker='x', label="Training point", s=50)
 
-    plt.legend(), plt.xlabel("k"), plt.ylabel("h"), plt.title("Figure 8. Mitigated phase diagram with QAD")
+    plt.legend(), plt.xlabel("k"), plt.ylabel("h"), plt.title("Mitigated phase diagram with QAD noise(35%)")
     cbar = plt.colorbar(im)
     cbar.set_label(r"Compression Score  $\mathcal{C}$")
-    plt.show()
+    plt.savefig("phase_diag_QAD_noise(35%)_mit.png")

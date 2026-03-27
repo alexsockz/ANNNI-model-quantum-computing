@@ -17,7 +17,7 @@ side = 20      # Discretization of the Phase Diagram
 
 answer = input("noise y or n?").lower().strip()
 if answer == "y":
-    noise_strength = 0.10
+    noise_strength = 1
 elif answer == "n":
     noise_strength = None
 
@@ -186,10 +186,6 @@ def anomaly_noisy(n_qubit, params):
         wires_to_rot = np.arange(n_qubit) if shift < depth - 1 else trash
         for wire in wires_to_rot:
             qml.RY(params[index], wires=int(wire))
-            if answer == "y":
-                qml.DepolarizingChannel(noise_strength, wires=int(wire))
-
-            index += 1
 
     return index, list(trash)
 
@@ -201,8 +197,7 @@ def anomalynode_noisy(params, state):
     qml.StatePrep(state, wires=range(num_qubits), normalize = True)
     # Quantum Anomaly Circuit
     _, trash_wires = anomaly_noisy(num_qubits, params)
-    for wire in trash_wires:
-        qml.DepolarizingChannel(noise_strength, wires=wire)
+
 
     return [qml.expval(qml.PauliZ(int(k))) for k in trash_wires]
 
