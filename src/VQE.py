@@ -295,16 +295,12 @@ def train_config_worker(k, h, n_qubits, n_layers):
     
     while not stop and attempt < max_attempts:
         attempt += 1
-        vqe = VQE(n_wires=n_qubits, n_layers=n_layers, k=k, h=h, shots=None, noise=False)
         
         print(f"\n{'='*50}")
         print(f"[{os.getpid()}] Training VQE with k={k}, h={h} | Attempt {attempt}/{max_attempts}")
         print(f"{'='*50}")
         
-        best_energy, best_epoch, last_epoch, energy_history, lr_history = vqe.train_VQE(non_zero_state=False)
-        
-        # safely extract scalar to a standard python float
-        theoretic = float(energy.theoretical_energy(n_qubits, k, h))
+        vqe, theoretic, best_energy, best_epoch, last_epoch, energy_history, lr_history = trainer(k,h,n_qubits,n_layers)
         
         if abs(theoretic) > 1e-9:
             err = abs((best_energy - theoretic) / theoretic)
@@ -346,26 +342,55 @@ def train_config_worker(k, h, n_qubits, n_layers):
     
     return metadata
 
-if __name__ == "__main__":
-    import multiprocessing as mp
+def trainer(k,h,n_qubits,n_layers):
+        vqe = VQE(n_wires=n_qubits, n_layers=n_layers, k=k, h=h, param_init="precalc", shots=None, noise=False)
+        best_energy, best_epoch, last_epoch, energy_history, lr_history = vqe.train_VQE(non_zero_state=False)
+        
+        # safely extract scalar to a standard python float
+        theoretic = float(energy.theoretical_energy(n_qubits, k, h))
+        return vqe, theoretic, best_energy, best_epoch, last_epoch, energy_history, lr_history
 
+if __name__ == "__main__":
+    
     print("start")
     t1 = perf_counter()
-
     n_qubits = 8
     n_layers = 9
-    configs = [(0, 0),(1,0),(0, 2)]
+    k=0.2
+    h=0.4
 
-    worker_args = [(k, h, n_qubits, n_layers) for (k, h) in configs]
-    num_workers = min(len(configs), mp.cpu_count())
-    
-    print(f"Running multiprocessing with {num_workers} workers...")
-    
-    # Using 'spawn' context can sometimes help prevent issues with PyTorch/JAX multiprocessing in Linux
-    mp.set_start_method('spawn', force=True)
-    
-    with mp.Pool(processes=num_workers) as pool:
-        results = pool.starmap(train_config_worker, worker_args)
-        
-    print(f"\nAll configurations processed.")
+    vqe, theoretic, best_energy, best_epoch, last_epoch, energy_history, lr_history=trainer(k,h,n_qubits,n_layers)
+    import matplotlib.pyplot as plt
+
+    plt.figure(figsize=(10, 6))
+    plt.plot(energy_history)
+    plt.xlabel('Epoch')
+    plt.ylabel('Energy')
+    plt.title('VQE Training Energy History')
+    plt.grid(True)
+    plt.savefig("qvefrombasisweights.png")
+    print(abs((best_energy-theoretic)/theoretic)*100)
     print(f"Total time: {perf_counter() - t1:.2f}s")
+
+    # import multiprocessing as mp
+
+    # print("start")
+    # t1 = perf_counter()
+
+    # n_qubits = 8
+    # n_layers = 9
+    # configs = [(0, 0), (1,0), (0, 2)]
+
+    # worker_args = [(k, h, n_qubits, n_layers) for (k, h) in configs]
+    # num_workers = min(len(configs), mp.cpu_count())
+    
+    # print(f"Running multiprocessing with {num_workers} workers...")
+    
+    # # Using 'spawn' context can sometimes help prevent issues with PyTorch/JAX multiprocessing in Linux
+    # mp.set_start_method('spawn', force=True)
+    
+    # with mp.Pool(processes=num_workers) as pool:
+    #     results = pool.starmap(train_config_worker, worker_args)
+        
+    # print(f"\nAll configurations processed.")
+    # print(f"Total time: {perf_counter() - t1:.2f}s")
