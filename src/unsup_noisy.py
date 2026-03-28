@@ -3,6 +3,7 @@ import numpy as np
 from jax import jit, vmap, value_and_grad, random, config
 from jax import numpy as jnp
 import optax
+import os
 
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap, BoundaryNorm
@@ -15,14 +16,22 @@ seed = 123456
 num_qubits = 8 # Number of spins in the Hamiltonian (= number of qubits)
 side = 20      # Discretization of the Phase Diagram
 
-import os
-os.makedirs("plots_noisy", exist_ok=True)
 
 def get_H(num_spins, k, h):
     """Construction function the ANNNI Hamiltonian (J=1)"""
 
     # Interaction between spins (neighbouring):
-    H = -1 * (qml.PauliX(0) @ qml.PauliX(1))
+    H = -1 * (qml.PauliX(0) @ q    H = -1 * (qml.PauliX(0) @ qml.PauliX(1))
+    for i in range(1, num_spins - 1):
+        H = H  - (qml.PauliX(i) @ qml.PauliX(i + 1))
+
+    # Interaction between spins (next-neighbouring):
+    for i in range(0, num_spins - 2):
+        H = H + k * (qml.PauliX(i) @ qml.PauliX(i + 2))
+
+    # Interaction of the spins with the magnetic field
+    for i in range(0, num_spins):
+        H = H - h * qml.PauliZ(i)ml.PauliX(1))
     for i in range(1, num_spins - 1):
         H = H  - (qml.PauliX(i) @ qml.PauliX(i + 1))
 
@@ -142,22 +151,19 @@ def anomaly_noisy(n_qubit, params, current_noise_strength):
     """
 
     # Block of gates connecting trash and non-trash wires
-    def block(nontrash, trash, shift):
+    def block(nontrash, trash, shift, current_noise_strength):
         # Connect trash wires
         for i, wire in enumerate(trash):
             target = trash[(i + 1 + shift) % len(trash)]
             qml.CZ(wires=[int(wire), int(target)])
-            if current_noise_strength > 0:
-                qml.DepolarizingChannel(current_noise_strength, wires=int(wire))
-                qml.DepolarizingChannel(current_noise_strength, wires=int(target))
+            qml.DepolarizingChannel(current_noise_strength, wires=int(wire))
+            qml.DepolarizingChannel(current_noise_strength, wires=int(target))
         # Connect each nontrash wire to a trash wire
         for i, wire in enumerate(nontrash):
             trash_idx = (i + shift) % len(trash)
             qml.CNOT(wires=[int(wire), int(trash[trash_idx])])
-            if current_noise_strength > 0:
-                qml.DepolarizingChannel(current_noise_strength, wires=int(wire))
-                qml.DepolarizingChannel(current_noise_strength, wires=int(trash[trash_idx]))
-    
+            qml.DepolarizingChannel(current_noise_strength, wires=int(wire))
+            qml.DepolarizingChannel(current_noise_strength, wires=int(trash[trash_idx]))
     depth = 2  # Number of repeated block layers
     n_trashwire = n_qubit // 2
 
@@ -170,30 +176,44 @@ def anomaly_noisy(n_qubit, params, current_noise_strength):
     # Initial layer: apply RY rotations on all wires.
     for wire in np.arange(n_qubit):
         qml.RY(params[index], wires=int(wire))
-        if current_noise_strength > 0:
-            qml.DepolarizingChannel(current_noise_strength, wires=int(wire))
-
+        qml.DepolarizingChannel(current_noise_strength, wires=int(wire))
         index += 1
 
     # Repeatedly apply blocks of entangling gates and additional rotations.
     for shift in range(depth):
-        block(nontrash, trash, shift)
+        block(nontrash, trash, shift, current_noise_strength)
         qml.Barrier()
         # In the final layer, only apply rotations on trash wires.
         wires_to_rot = np.arange(n_qubit) if shift < depth - 1 else trash
         for wire in wires_to_rot:
-            qml.RY(params[index], wires=int(wire)) 
-
+            qml.RY(params[index], wires=int(wire))
+            qml.DepolarizingChannel(current_noise_strength, wires=int(wire))
+            index += 1
     return index, list(trash)
 
 
-# Vectorize the circuit using vmap for clean training
+@qml.qnode(qml.device("default.mixed", wires=num_qubits))
+def anomalynode_noisy(params, state, current_noise_strength):
+    """QNode with QAD ansatz and expectation values of the trash wires as output"""
+    # Input ground state from diagonalization
+    qml.StatePrep(state, wires=range(num_qubits), normalize = True)
+    # Quantum Anomaly Circuit
+    _, trash_wires = anomaly_noisy(num_qubits, params, current_noise_strength)
+
+
+    return [qml.expval(qml.PauliZ(int(k))) for k in trash_wires]
+
+
+
+# Vectorize the circuit using vmap
 jitted_anomaly_circuit = jit(anomaly_circuit)
 vectorized_anomaly_circuit = vmap(jitted_anomaly_circuit, in_axes=(None, 0))
 
+jitted_anomalynode_noisy = jit(anomalynode_noisy)
+vectorized_anomalynode_noisy = vmap(jitted_anomalynode_noisy, in_axes=(None, 0, None))
+
 # Draw the QAD Architecture
 fig,ax = qml.draw_mpl(anomaly_circuit)(np.arange(num_anomaly_params), psis[0,0])
-plt.close(fig) # close it since we don't need to show it interactively
 
 def train_anomaly(num_epochs, lr, seed):
     """Training function of the QAD architecture"""
@@ -235,63 +255,47 @@ def train_anomaly(num_epochs, lr, seed):
 
     return params, loss_curve
 
-
-print("Training clean model...")
 trained_anomaly_params, anomaly_loss_curve = train_anomaly(num_epochs=100, lr=1e-1, seed=seed)
 
 # Plot the loss curve
+
 plt.figure()
 plt.plot(anomaly_loss_curve, label="Loss", color="blue", linewidth=2)
 plt.xlabel("Epochs"), plt.ylabel("Compression Loss")
 plt.title("Figure 6. Anomaly training compression loss curve")
 plt.legend()
 plt.grid()
-plt.savefig("plots_noisy/anomaly_loss_curve.png")
-plt.close()
+plt.savefig("loss curve")
 
-# Generate phase diagrams over multiple noise levels (0% to 100% in 5% steps)
-noise_levels = np.arange(0.0, 1.05, 0.05)
+# Evaluate the compression score for each state in the phase diagram
 
-for ns in noise_levels:
-    print(f"Evaluating and plotting phase diagram for noise strength: {ns:.2f}")
+# Create directory for saving plots
+os.makedirs("plots_unsup_noisy", exist_ok=True)
 
-    # Create a fresh QNode parameterized explicitly with the current noise
-    @qml.qnode(qml.device("default.mixed", wires=num_qubits))
-    def anomalynode_noisy_eval(params, state):
-        # Input ground state from diagonalization
-        qml.StatePrep(state, wires=range(num_qubits), normalize=True)
-        # Quantum Anomaly Circuit
-        _, trash_wires = anomaly_noisy(num_qubits, params, ns)
-
-
-        return [qml.expval(qml.PauliZ(int(k))) for k in trash_wires]
-
-    jitted_eval = jit(anomalynode_noisy_eval)
-    vectorized_eval = vmap(jitted_eval, in_axes=(None, 0))
-
-    # Evaluate the compression score for each state in the phase diagram
-    compressions = vectorized_eval(trained_anomaly_params, psis.reshape(-1, 2**num_qubits))
+for i,current_noise in enumerate(np.linspace(0, 1, 20)):
+    compressions = vectorized_anomalynode_noisy(trained_anomaly_params, psis.reshape(-1, 2**num_qubits), current_noise)
     compressions = jnp.mean(1 - jnp.array(compressions), axis=0)
 
     plt.figure()
     im = plt.imshow(compressions.reshape(side, side), aspect="auto", origin="lower", extent=[0, 1, 0, 2])
 
-    # Plot transition lines
+    # Plot transition lines (assuming ising_transition and kt_transition are defined)
     plt.plot(np.linspace(0.0, 0.5, 50), ising_transition(np.linspace(0.0, 0.5, 50)), 'k')
     plt.plot(np.linspace(0.5, 1.0, 50), kt_transition(np.linspace(0.5, 1.0, 50)), 'k')
 
     plt.plot([], [], 'k', label='Transition Lines')
-    plt.scatter([0 +.3/len(ks)], [0 + .5/len(hs)], color='r', marker='x', label="Training point", s=50)
+    plt.scatter([0 + .3/len(ks)], [0 + .5/len(hs)], color='r', marker='x', label="Training point", s=50)
 
     plt.legend()
     plt.xlabel("k")
     plt.ylabel("h")
-    plt.title(f"Figure 7. Phase diagram with QAD (Noise: {int(np.round(ns*100))}%)")
+    plt.title(f"Figure 7. Phase diagram with QAD (Noise: {current_noise:.0%})")
     cbar = plt.colorbar(im)
     cbar.set_label(r"Compression Score  $\mathcal{C}$")
     
-    # Save directly instead of blocking the loop with plt.show()
-    plt.savefig(f"plots_noisy/phase_diagram_noise_{int(np.round(ns*100)):03d}.png")
+    # Save the plot
+    filename = f"plots_unsup_noisy/phase_diagram_noise_{current_noise:.2f}_frame{i}.png"
+    plt.savefig(filename, dpi=150, bbox_inches='tight')
     plt.close()
-
-print("All noise levels processed successfully! Check the 'plots_noisy' directory.")
+    
+    print(f"Saved plot for noise level {current_noise:.2f}")
