@@ -186,7 +186,9 @@ def anomaly_noisy(n_qubit, params):
         wires_to_rot = np.arange(n_qubit) if shift < depth - 1 else trash
         for wire in wires_to_rot:
             qml.RY(params[index], wires=int(wire))
-
+            if answer == "y":
+                qml.DepolarizingChannel(noise_strength, wires=int(wire))
+            index += 1
     return index, list(trash)
 
 
@@ -266,7 +268,10 @@ plt.grid()
 plt.show()
 
 # Evaluate the compression score for each state in the phase diagram
-compressions = vectorized_anomalynode_noisy(trained_anomaly_params, psis.reshape(-1, 2**num_qubits))
+if answer == "y":
+    compressions = vectorized_anomalynode_noisy(trained_anomaly_params, psis.reshape(-1, 2**num_qubits))
+elif answer == "n":
+    compressions = vectorized_anomaly_circuit(trained_anomaly_params, psis.reshape(-1, 2 ** num_qubits))
 compressions = jnp.mean(1 - jnp.array(compressions), axis = 0)
 
 im = plt.imshow(compressions.reshape(side, side), aspect="auto", origin="lower", extent=[0, 1, 0, 2])
