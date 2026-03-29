@@ -45,17 +45,18 @@ def run_trial(trial):
     #paper says 6/12
     #n_qubits = trial.suggest_categorical("n_qubits", [4, 6, 8, 12])
    
-    ansatz_depth = trial.suggest_int("ansatz_depth", 5, 9)
+    n_layers = 9
+    # ansatz_depth = trial.suggest_int("ansatz_depth", 5, 9)
     
     #n_shots = trial.suggest_categorical("n_shots", [100, 1000, 10000])
     #SETTING IT TO NONE FOR TIME IT WOULD BE MORE CORRECT TO HAVE IT WITH SET NUMBER OF SHOTS
     n_shots=None
     
     # Suggesting from a range is often better than a fixed list
-    learning_rate = trial.suggest_float("learning_rate", 8e-2, 6e-1, log=True)
-    schedule_factor = trial.suggest_float("schedule_factor", 0.2, 0.8)
-    schedule_patience = trial.suggest_int("schedule_patience", 5, 14)
-    state_or_not = trial.suggest_categorical("non_zero_state", [True, False])
+    # learning_rate = trial.suggest_float("learning_rate", 8e-2, 6e-1, log=True)
+    # schedule_factor = trial.suggest_float("schedule_factor", 0.2, 0.8)
+    # schedule_patience = trial.suggest_int("schedule_patience", 8, 14)
+    # state_or_not = trial.suggest_categorical("non_zero_state", [True, False])
     
     # #ATTEMPT AT MAKING IT IN REALTION TO THE SCHEDULE
     # patience_center = int(5 + 11 * ((1 - schedule_factor)**2))
@@ -64,11 +65,11 @@ def run_trial(trial):
     # schedule_patience = trial.suggest_int("schedule_patience", min_patience, max_patience)
 
     #optimizer_choice = trial.suggest_categorical("optimizer", ["ASDG", "Adam"])
-    init_type = trial.suggest_categorical("init_type", ["random", "small_random"])
+    init_type = trial.suggest_categorical("init_type", ["random", "precalc"])
 
     
 
-    n_repeat = 20 # Set to 1 for speed, increase for more robust statistics
+    n_repeat = 15 # Set to 1 for speed, increase for more robust statistics
 
     energies_error = []
     epochs_list = []
@@ -78,19 +79,17 @@ def run_trial(trial):
         k_selected=randint(0,number_of_kh-1)
         h_selected=randint(0,number_of_kh-1)
         vqe = VQE(n_wires=n_qubits,
-            n_layers=ansatz_depth,
+            n_layers=n_layers,
             k=ks[k_selected], h=hs[h_selected], j= 1, 
             shots= n_shots, 
+            param_init=init_type,
             patience= 30,  
-            param_init=init_type)
+            )
           
         best_energy, best_epoch, _, _, _= vqe.train_VQE( epochs = 3000,
-                                learning_rate = learning_rate,
-                                scheduler_patience = schedule_patience,
-                                scheduler_factor = schedule_factor,
                                 optimizer_choice = "Adam",
                                 with_scheduler = True,
-                                non_zero_state=state_or_not)  
+                                )  
         energies_error.append(float(abs((best_energy - theoretical_energy[h_selected,k_selected]) / theoretical_energy[h_selected,k_selected])))
         epochs_list.append(best_epoch)
 
@@ -111,7 +110,7 @@ def diagonalize_H(H_matrix):
     _, psi = jnp.linalg.eigh(H_matrix)  # Compute eigenvalues and eigenvectors
     return jnp.array(psi[:, 0], dtype=jnp.complex64)  # Return the ground state
 
-n_qubits=6
+n_qubits=8
 number_of_kh=10
     # Create meshgrid of the parameter space
     
@@ -125,7 +124,7 @@ theoretical_energy=np.empty((len(ks), len(hs)), dtype=float)
 
 if __name__ == "__main__":
 
-    n_trials=7
+    n_trials=3
     pbar = tqdm(total=n_trials, desc="Optimizing VQE") # Match total to n_trials
     #torch.manual_seed(42)    
 
@@ -161,7 +160,7 @@ if __name__ == "__main__":
 
     # 2. CREATE STUDY
     study = optuna.create_study(
-        study_name="vqe_search_v5_with_random_kh_beginning_state_shots_none",
+        study_name="vqe_search_v5_with_random_kh_beginning_params_shots_none_attempt2",
         storage=storage_url,
         directions=["minimize", "minimize", "minimize"],
         pruner=optuna.pruners.MedianPruner(),

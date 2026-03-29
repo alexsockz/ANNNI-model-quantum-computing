@@ -30,10 +30,10 @@ def compute_point(args):
     
     # Esecuzione del VQE
     # Nota: il device viene creato all'interno del processo worker
-    state = get_vqe_state(k_val, h_val, n_layers=8, epochs=1000)
+    state, energy_history = get_vqe_state(k_val, h_val, n_layers=12, epochs=4000)
     
     # Restituiamo i risultati insieme agli indici per ricostruire la matrice
-    return (y, x, state, phase)
+    return (y, x, state, phase, energy_history)
 
 
 def get_H(num_spins, k, h):
@@ -79,27 +79,69 @@ K, H_mesh = np.meshgrid(ks, hs)   # H_mesh per non confondere con l'Hamiltoniana
 # Prepara l'array per gli stati (complessi)
 psis = np.empty((len(ks), len(hs), 2**num_qubits), dtype=np.complex128)
 
-def get_vqe_state(k, h, n_layers=6, epochs=500):
+def get_theoretical_energy(k, h):
+    """
+    Computes the theoretical ground state energy of the ANNNI Hamiltonian.
+    """
+    H = get_H(num_qubits, k, h)
+    dev = qml.device("lightning.qubit", wires=num_qubits)
+    
+    @qml.qnode(dev)
+    def compute_energy(state):
+        for i, amplitude in enumerate(state):
+            if amplitude != 0:
+                # Construct computational basis state
+                binary = format(i, f'0{num_qubits}b')
+                for j, bit in enumerate(binary):
+                    if bit == '1':
+                        qml.PauliX(j)
+        return qml.expval(H)
+    
+    # Find ground state by diagonalization
+    H_matrix = qml.matrix(H)
+    eigenvalues = np.linalg.eigvalsh(H_matrix)
+    return eigenvalues[0]  # Return lowest eigenvalue
+
+def get_vqe_state(k, h, n_layers=6, epochs=500, max_retries=3, error_threshold=1):
     """
     Esegue il VQE per l'Hamiltoniana con parametri (k, h) e restituisce lo stato fondamentale approssimato.
+    Retry se l'errore di run (abs((energyVqe-energyTheoretical)/energyTheoretical)*100) > error_threshold %.
     """
-    # Costruisce l'Hamiltoniana
-    H = get_H(num_qubits, k, h)
-    # Crea il dispositivo (senza rumore per ora)
-    dev = qml.device("lightning.qubit", wires=num_qubits)
-    # Inizializza la classe VQE (assumendo che accetti k, h e n_layers)
-    vqe = VQE(num_qubits, n_layers=n_layers, k=k, h=h, shots=None)
-    # Addestra il VQE
-    best_energy, _, _, _, _ = vqe.train_VQE(epochs=epochs)
-    # QNode per estrarre lo stato finale
-    @qml.qnode(dev)  # interfaccia di default (NumPy)
-    def state_circuit(params):
-        vqe.ansatz(params)
-        return qml.state()
+    # Ottieni l'energia teorica
+    energy_theoretical = get_theoretical_energy(k, h)
+    
+    for attempt in range(max_retries):
+        # Costruisce l'Hamiltoniana
+        H = get_H(num_qubits, k, h)
+        # Crea il dispositivo (senza rumore per ora)
+        dev = qml.device("lightning.qubit", wires=num_qubits)
+        # Inizializza la classe VQE (assumendo che accetti k, h e n_layers)
+        vqe = VQE(num_qubits, n_layers=n_layers, k=k, h=h, shots=None)
+        # Addestra il VQE
+        best_energy, _, _, energy_history, _ = vqe.train_VQE(epochs=epochs, non_zero_state=True)
+              
+        # Calculate run error
+        run_error = abs((best_energy - energy_theoretical) / energy_theoretical) * 100
+        
+        # QNode per estrarre lo stato finale
+        @qml.qnode(dev)  # interfaccia di default (NumPy)
+        def state_circuit(params):
+            vqe.ansatz(params)
+            return qml.state()
 
-    params_np = vqe.parameters_vqe.detach().numpy()
-    state = state_circuit(params_np)  # state sarà un array NumPy
-    return state  # già array NumPy, nessuna conversione ulteriore
+        params_np = vqe.parameters_vqe.detach().numpy()
+        state = state_circuit(params_np)  # state sarà un array NumPy
+        
+        # Check if error is within threshold
+        if run_error <= error_threshold:
+            return state, np.array(energy_history)  # già array NumPy, nessuna conversione ulteriore
+        else:
+            # Retry if error exceeds threshold and retries are available
+            if attempt < max_retries - 1:
+                print(f"Run error {run_error:.4f}% > {error_threshold}% threshold for k={k:.3f}, h={h:.3f}. Retrying (attempt {attempt+2}/{max_retries})...")
+            else:
+                print(f"Max retries reached for k={k:.3f}, h={h:.3f}. Using best result with error {run_error:.4f}%.")
+                return state, np.array(energy_history)
 
 if __name__ == "__main__":
     # Configurazione JAX (importante farlo dentro il main o prima di definire i worker)
@@ -133,11 +175,13 @@ if __name__ == "__main__":
     # 3. Ricostruzione delle matrici dei risultati
     psis = np.empty((len(hs), len(ks), 2**num_qubits), dtype=np.complex128)
     phases = np.empty((len(hs), len(ks)), dtype=int)
+    energy_histories = np.empty((len(hs), len(ks)), dtype=float)
 
-    for y, x, state, phase in results:
+    for y, x, state, phase, energy_history in results:
         psis[y, x] = state
         phases[y, x] = phase
+        energy_histories[y, x] = energy_history
 
     # 4. Salvataggio
-    np.savez("vqe_states.npz", psis=psis, ks=ks, hs=hs, phases=phases)
+    np.savez("vqe_states.npz", psis=psis, ks=ks, hs=hs, phases=phases, energy_histories=energy_histories)
     print("Calcolo completato e stati salvati.")
