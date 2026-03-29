@@ -351,26 +351,42 @@ def trainer(k,h,n_qubits,n_layers):
         return vqe, theoretic, best_energy, best_epoch, last_epoch, energy_history, lr_history
 
 if __name__ == "__main__":
-    
-    print("start")
-    t1 = perf_counter()
-    n_qubits = 8
-    n_layers = 9
-    k=0.2
-    h=0.4
-
-    vqe, theoretic, best_energy, best_epoch, last_epoch, energy_history, lr_history=trainer(k,h,n_qubits,n_layers)
     import matplotlib.pyplot as plt
 
-    plt.figure(figsize=(10, 6))
-    plt.plot(energy_history)
-    plt.xlabel('Epoch')
-    plt.ylabel('Energy')
-    plt.title('VQE Training Energy History')
-    plt.grid(True)
-    plt.savefig("qvefrombasisweights.png")
-    print(abs((best_energy-theoretic)/theoretic)*100)
-    print(f"Total time: {perf_counter() - t1:.2f}s")
+    # Create a simple VQE instance
+    n_qubits = 4
+    n_layers = 2
+    vqe = VQE(n_wires=n_qubits, n_layers=n_layers, k=0.5, h=0.5, param_init="random", shots=None, noise=False)
+
+    # Create a figure to draw the circuit
+    fig, ax = plt.subplots(figsize=(14, 6))
+
+    # Draw the circuit using PennyLane's draw function
+    qml.draw_mpl(vqe.qnode, decimals=2)(vqe.parameters_vqe)
+    plt.tight_layout()
+    plt.savefig("vqe_circuit.png", dpi=150, bbox_inches='tight')
+    plt.show()
+
+    print("Circuit saved as vqe_circuit.png")
+    # print("start")
+    # t1 = perf_counter()
+    # n_qubits = 8
+    # n_layers = 9
+    # k=0.2
+    # h=0.4
+
+    # vqe, theoretic, best_energy, best_epoch, last_epoch, energy_history, lr_history=trainer(k,h,n_qubits,n_layers)
+    # import matplotlib.pyplot as plt
+
+    # plt.figure(figsize=(10, 6))
+    # plt.plot(energy_history)
+    # plt.xlabel('Epoch')
+    # plt.ylabel('Energy')
+    # plt.title('VQE Training Energy History')
+    # plt.grid(True)
+    # plt.savefig("qvefrombasisweights.png")
+    # print(abs((best_energy-theoretic)/theoretic)*100)
+    # print(f"Total time: {perf_counter() - t1:.2f}s")
 
     # import multiprocessing as mp
 

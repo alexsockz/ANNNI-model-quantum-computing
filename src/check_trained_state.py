@@ -44,9 +44,9 @@ ttot=0
 ttott=0
 
 sum=0
-for i in range(len(params)):
-    sum += params[i]**2
-dist = np.sqrt(sum)
+# for i in range(len(params)):
+#     sum += params[i]**2
+# dist = np.sqrt(sum)
 
 cose=np.empty((len(npzfile["ks"]),len(npzfile["hs"])))
 for i,k in enumerate(npzfile["ks"]):
@@ -59,7 +59,7 @@ for i,k in enumerate(npzfile["ks"]):
         t1=perf_counter()
         theoretical_energy=energy.theoretical_energy(N,k,h)
         ttott+=perf_counter()-t1
-        if(j%20==0):print(f"theoretical {ttott}")
+        if(j%20==0):print(f"theoretical t: {ttott}")
         cose[j,i]=-(computed-theoretical_energy)/theoretical_energy*100
         #print(f"k={k} h={h} computed with exp: {computed} \n theoretical energy: {theoretical_energy}")
         #print(f"error: {cose}\n")

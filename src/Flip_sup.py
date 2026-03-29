@@ -18,12 +18,8 @@ seed = 123456
 num_qubits = 8 # Number of spins in the Hamiltonian (= number of qubits)
 side = 20     # Discretization of the Phase Diagram
 
-answer = input("noise y or n?").lower().strip()
-if answer == "y":
-    noise_strength = 0.70 # probabilità di bit‑flip
-elif answer == "n":
-    noise_strength = None
-
+import os
+os.makedirs("plots_flip_sup", exist_ok=True)
 
 def get_H(num_spins, k, h):
     """Construction function the ANNNI Hamiltonian (J=1)"""
@@ -171,9 +167,9 @@ vectorized_qcnn_circuit = vmap(jit(qcnn_circuit), in_axes=(None, 0))
 
 # Draw the QCNN Architecture
 fig,ax = qml.draw_mpl(qcnn_circuit)(np.arange(num_params), psis[0,0])
+plt.close(fig)
 
-
-def qcnn_ansatz_noisy(num_qubits, params):
+def qcnn_ansatz_noisy(num_qubits, params, current_noise_strength):
     """Ansatz of the QCNN model with bit‑flip noise
     Repetitions of the convolutional and pooling blocks
     until only 2 wires are left unmeasured
@@ -216,8 +212,9 @@ def qcnn_ansatz_noisy(num_qubits, params):
     index = 0
 
     # Layer of bitflips
-    for wire in active_wires:
-        qml.BitFlip(noise_strength, wires=int(wire))
+    if current_noise_strength > 0:
+        for wire in active_wires:
+            qml.BitFlip(current_noise_strength, wires=int(wire))
 
     # Initial layer: apply RY to all wires.
     for wire in active_wires:
@@ -236,17 +233,16 @@ def qcnn_ansatz_noisy(num_qubits, params):
         index += 1
     return index, active_wires
 
-num_params, output_wires = qcnn_ansatz_noisy(num_qubits, [0]*100)
+num_params, output_wires = qcnn_ansatz_noisy(num_qubits, [0]*100, 0.0)
 
-if answer == "y":
-    dev = qml.device("default.mixed", wires=num_qubits)
-elif answer == "n":
-    dev = qml.device("default.qubit", wires=num_qubits)
+
+# Initialize dev and clean up unused ones from previous code
+dev = qml.device("default.qubit", wires=num_qubits)
 
 @qml.qnode(dev)
 def qcnn_noisy(params, state):
     qml.StatePrep(state, wires=range(num_qubits), normalize=True)
-    _, output_wires = qcnn_ansatz_noisy(num_qubits, params)
+    _, output_wires = qcnn_ansatz_noisy(num_qubits, params, 0.0)
     return qml.probs([int(k) for k in output_wires])
 
 # Vectorized circuit through vmap
@@ -318,45 +314,62 @@ plt.xlabel("Epochs"), plt.ylabel("Cross-Entropy Loss")
 plt.title("Figure 4. QCNN Training Cross-Entropy Loss Curve")
 plt.legend()
 plt.grid()
-plt.show()
+plt.savefig("plots_flip_sup/qcnn_loss_curve.png")
+plt.close()
 
 
-# Take the predicted classes for each point in the phase diagram
-predicted_classes = np.argmax(
-    vectorized_qcnn_noisy(trained_params, psis.reshape(-1, 2**num_qubits)),
-    axis=1
-)
+noise_levels = np.arange(0.0, 1.05, 0.05)
 
-colors = ['#80bfff', '#fff2a8',  '#80f090', '#da8080',]
-phase_labels = ["Ferromagnetic", "Antiphase", "Paramagnetic", "Trash Class",]
-cmap = ListedColormap(colors)
+for ns in noise_levels:
+    print(f"Evaluating and plotting phase diagram for noise strength: {ns:.2f}")
 
-bounds = [-0.5, 0.5, 1.5, 2.5, 3.5]
-norm = BoundaryNorm(bounds, cmap.N)
+    @qml.qnode(qml.device("default.mixed", wires=num_qubits))
+    def qcnn_noisy_eval(params, state):
+        qml.StatePrep(state, wires=range(num_qubits), normalize=True)
+        _, output_wires = qcnn_ansatz_noisy(num_qubits, params, ns)
+        return qml.probs([int(k) for k in output_wires])
 
-# Plot the predictions over the phase diagram
-plt.figure(figsize=(4,4), constrained_layout=True)
-plt.imshow(
-    predicted_classes.reshape(side, side),
-    cmap=cmap,
-    norm=norm,
-    aspect="auto",
-    origin="lower",
-    extent=[0, 1, 0, 2]
-)
+    vectorized_qcnn_noisy_eval = vmap(jit(qcnn_noisy_eval), in_axes=(None, 0))
 
-# Plot the transition lines (Ising and KT) for reference.
-k_vals1 = np.linspace(0.0, 0.5, 50)
-k_vals2 = np.linspace(0.5, 1.0, 50)
-plt.plot(k_vals1, ising_transition(k_vals1), 'k')
-plt.plot(k_vals2, kt_transition(k_vals2), 'k')
-plt.plot(k_vals2, bkt_transition(k_vals2), 'k', ls = '--')
+    # Take the predicted classes for each point in the phase diagram
+    predicted_classes = np.argmax(
+        vectorized_qcnn_noisy_eval(trained_params, psis.reshape(-1, 2**num_qubits)),
+        axis=1
+    )
 
-for color, phase in zip(colors, phase_labels[:-1]):
-    plt.scatter([], [], color=color, label=phase, edgecolors='black')
-plt.plot([], [], 'k', label='Transition lines')
+    colors = ['#80bfff', '#fff2a8',  '#80f090', '#da8080',]
+    phase_labels = ["Ferromagnetic", "Antiphase", "Paramagnetic", "Trash Class",]
+    cmap = ListedColormap(colors)
 
-plt.xlabel("k"), plt.ylabel("h")
-plt.title("Figure 5. QCNN Classification with Bit‑Flip Noise")
-plt.legend()
-plt.show()
+    bounds = [-0.5, 0.5, 1.5, 2.5, 3.5]
+    norm = BoundaryNorm(bounds, cmap.N)
+
+    # Plot the predictions over the phase diagram
+    plt.figure(figsize=(4,4), constrained_layout=True)
+    plt.imshow(
+        predicted_classes.reshape(side, side),
+        cmap=cmap,
+        norm=norm,
+        aspect="auto",
+        origin="lower",
+        extent=[0, 1, 0, 2]
+    )
+
+    # Plot the transition lines (Ising and KT) for reference.
+    k_vals1 = np.linspace(0.0, 0.5, 50)
+    k_vals2 = np.linspace(0.5, 1.0, 50)
+    plt.plot(k_vals1, ising_transition(k_vals1), 'k')
+    plt.plot(k_vals2, kt_transition(k_vals2), 'k')
+    plt.plot(k_vals2, bkt_transition(k_vals2), 'k', ls = '--')
+
+    for color, phase in zip(colors, phase_labels[:-1]):
+        plt.scatter([], [], color=color, label=phase, edgecolors='black')
+    plt.plot([], [], 'k', label='Transition lines')
+
+    plt.xlabel("k"), plt.ylabel("h")
+    plt.title(f"Figure 5. QCNN Classification with Bit‑Flip Noise ({int(np.round(ns*100))}%)")
+    plt.legend()
+    plt.savefig(f"plots_flip_sup/phase_diagram_noise_{int(np.round(ns*100)):03d}.png")
+    plt.close()
+
+print("All noise levels processed successfully! Check the 'plots_flip_sup' directory.")
