@@ -21,17 +21,7 @@ def get_H(num_spins, k, h):
     """Construction function the ANNNI Hamiltonian (J=1)"""
 
     # Interaction between spins (neighbouring):
-    H = -1 * (qml.PauliX(0) @ q    H = -1 * (qml.PauliX(0) @ qml.PauliX(1))
-    for i in range(1, num_spins - 1):
-        H = H  - (qml.PauliX(i) @ qml.PauliX(i + 1))
-
-    # Interaction between spins (next-neighbouring):
-    for i in range(0, num_spins - 2):
-        H = H + k * (qml.PauliX(i) @ qml.PauliX(i + 2))
-
-    # Interaction of the spins with the magnetic field
-    for i in range(0, num_spins):
-        H = H - h * qml.PauliZ(i)ml.PauliX(1))
+    H = -1 * (qml.PauliX(0) @ qml.PauliX(1))
     for i in range(1, num_spins - 1):
         H = H  - (qml.PauliX(i) @ qml.PauliX(i + 1))
 
@@ -44,6 +34,7 @@ def get_H(num_spins, k, h):
         H = H - h * qml.PauliZ(i)
 
     return H
+
 
 def kt_transition(k):
     """Kosterlitz-Thouless transition line"""
@@ -272,10 +263,13 @@ plt.savefig("loss curve")
 # Create directory for saving plots
 os.makedirs("plots_unsup_noisy", exist_ok=True)
 
+list_of_sums=[]
+
 for i,current_noise in enumerate(np.linspace(0, 1, 20)):
     compressions = vectorized_anomalynode_noisy(trained_anomaly_params, psis.reshape(-1, 2**num_qubits), current_noise)
     compressions = jnp.mean(1 - jnp.array(compressions), axis=0)
 
+    list_of_sums.append(sum(compressions))
     plt.figure()
     im = plt.imshow(compressions.reshape(side, side), aspect="auto", origin="lower", extent=[0, 1, 0, 2])
 
@@ -299,3 +293,13 @@ for i,current_noise in enumerate(np.linspace(0, 1, 20)):
     plt.close()
     
     print(f"Saved plot for noise level {current_noise:.2f}")
+
+plt.figure()
+noise_levels = np.linspace(0, 1, 20)
+plt.plot(noise_levels, list_of_sums)
+plt.xlabel("Noise Level")
+plt.ylabel("Total Compression Score")
+plt.title("Figure 8. Compression Score Variation with Noise")
+plt.grid()
+plt.savefig("compression_variation.png", dpi=150, bbox_inches='tight')
+plt.close()

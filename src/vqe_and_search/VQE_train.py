@@ -3,12 +3,15 @@ import numpy as np
 from jax import jit, vmap, value_and_grad, random, config
 from jax import numpy as jnp
 import optax
-from VQE import VQE  # Assicurati che la classe VQE sia definita correttamente in VQE.py
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap, BoundaryNorm
 import multiprocessing as mp
 from itertools import product
 from tqdm import tqdm
+from pathlib import Path
+from src.vqe_and_search.VQE import VQE  # Assicurati che la classe VQE sia definita correttamente in VQE.py
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 config.update("jax_enable_x64", True)
 
@@ -183,5 +186,5 @@ if __name__ == "__main__":
         energy_histories[y, x] = energy_history
 
     # 4. Salvataggio
-    np.savez("vqe_states.npz", psis=psis, ks=ks, hs=hs, phases=phases, energy_histories=energy_histories)
+    np.savez(PROJECT_ROOT / "vqe_states.npz", psis=psis, ks=ks, hs=hs, phases=phases, energy_histories=energy_histories)
     print("Calcolo completato e stati salvati.")

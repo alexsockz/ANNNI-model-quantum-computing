@@ -1,6 +1,5 @@
 import os
 import warnings
-from VQE import VQE
 import torch
 from time import perf_counter
 import numpy as np
@@ -12,6 +11,16 @@ from jax import numpy as jnp
 from jax import vmap
 import pennylane as qml
 from random import randint
+from src.vqe_and_search.VQE import VQE
+
+'''
+TO VISUALIZE THIS, while open terminal in the main folder do
+optuna-dashboard sqlite:///vqe_results.db
+then you can access http://127.0.0.1:8080/
+or choose an address through the option --host "ip" --port "port"
+'''
+
+
 # Suppress JAX and numerical warnings
 warnings.filterwarnings('ignore', category=RuntimeWarning)
 os.environ["JAX_QUIET_STARTUP"] = "1"

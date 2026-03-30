@@ -1,8 +1,11 @@
 import numpy as np
-import energy
 import pennylane as qml
+from pathlib import Path
+import src.vqe_and_search.energy as energy
 
-npzfile = np.load("vqe_states.npz")
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+npzfile = np.load(PROJECT_ROOT / "vqe_states.npz")
 print(npzfile.files)
 
 i=0

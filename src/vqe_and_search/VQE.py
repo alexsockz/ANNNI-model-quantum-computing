@@ -6,17 +6,21 @@ import torch.nn as nn
 import numpy as np
 from qiskit_aer.noise import NoiseModel, depolarizing_error
 from qiskit_aer import AerSimulator
-from ground_state_at_borders import calc_state
 import os
 from time import perf_counter
 import torch
 import json
-import energy
+from pathlib import Path
+from src.vqe_and_search.ground_state_at_borders import calc_state
+import src.vqe_and_search.energy as energy
 
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
 os.environ["JAX_PLATFORM_NAME"] = "cpu"
 os.environ["JAX_QUIET_STARTUP"] = "1"
 os.environ["OMP_NUM_THREADS"] = "1"
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PRECALCULATED_DIR = PROJECT_ROOT / "precalculated"
 
 
 # config.update("jax_enable_x64", True)
@@ -79,7 +83,7 @@ class VQE:
                 file_name = "vqe_params_k1_h0.pt"
             else:
                 file_name = "vqe_params_k0_h2.pt"
-            loaded_params = torch.load(file_name, weights_only=True)
+            loaded_params = torch.load(PRECALCULATED_DIR / file_name, weights_only=True)
             self.parameters_vqe = nn.Parameter(loaded_params, requires_grad=True)
 
         # Pre-calculate bitstrings for the 2^n states in bigendian order
@@ -147,14 +151,11 @@ class VQE:
         starting_state=None
         if (non_zero_state==True):
             if(phase==0):
-                starting_state,phase2=calc_state(self.n,0,0)
-                print(f"{phase}{phase2}")
+                starting_state,_=calc_state(self.n,0,0)
             elif(phase==1):
-                starting_state,phase2=calc_state(self.n,1,0)
-                print(f"{phase}{phase2}")
+                starting_state,_=calc_state(self.n,1%2,0)
             else:
-                starting_state,phase2=calc_state(self.n,0,2)
-                print(f"{phase}{phase2}")
+                starting_state,_=calc_state(self.n,0,2)
             starting_state=torch.tensor(starting_state,dtype=torch.complex128)
 
         # various variables to keep track of what is happening to the model
@@ -167,6 +168,12 @@ class VQE:
         energy_history = []
         lr_history = []
 
+        # during training it might happen that the pit you want to fall in 
+        # gets too small for the learning rate to let you jump to a lower place
+        # this is solvable by making the learning rate smaller,
+        # a scheduler reduce the learning rate depending on various parameters
+        # this scheduler, after "patiance" number of steps, "looses it's patiance"
+        # and reduce the learning rate by multipling the rate by the "factor"
         # Averaged Stochastic Gradient Descent does not need a scheduling for learning rate
         scheduler_decision = with_scheduler and optimizer_choice != "ASGD"
 
@@ -175,15 +182,11 @@ class VQE:
         else: # Adaptive Moment Estimation (the best one)
             optimizer = optim.Adam([self.parameters_vqe], lr=learning_rate, weight_decay=0)
         
-        # during training it might happen that the pit you want to fall in 
-        # gets too small for the learning rate to let you jump to a lower place
-        # this is solvable by making the learning rate smaller,
-        # a scheduler reduce the learning rate depending on various parameters
-        # this scheduler, after "patiance" number of steps, "looses it's patiance"
-        # and reduce the learning rate by multipling the rate by the "factor"
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', 
-                                                         patience=scheduler_patience if scheduler_decision else 1000, 
-                                                         factor=scheduler_factor if scheduler_decision else 1.0)
+                                                         patience=scheduler_patience, 
+                                                         factor=scheduler_factor)
+        
+
         # now the training begins
         for epoch in range(epochs):
             # Delete old gradients
@@ -197,13 +200,6 @@ class VQE:
             energy = self._compute_energy_from_probs(probs_z, probs_x)
             energy_val = energy.item()
             
-            # # --- Optuna Reporting & Pruning ---
-            # doesn't work for multiobjective ??
-            # if optuna_trial is not None:
-            #     optuna_trial.report(energy_val, step=epoch)
-            #     if optuna_trial.should_prune():
-            #         raise optuna.exceptions.TrialPruned()
-
             # remember the best model
             if energy_val < best_energy:
                 best_energy = energy_val
@@ -255,21 +251,16 @@ class VQE:
         """
         probs_z = probs_z.float()
         probs_x = probs_x.float()
-        
         energy = tensor(0.0, dtype=torch.float64)
-
         # Nearest Neighbor XX interactions
         for i in range(self.n - 1):
             energy -= self.j * sum(self.eigenvalues_nn[i] * probs_x)
-        
         # Next-Nearest Neighbor XX interactions
         for i in range(self.n - 2):
             energy += self.k * sum(self.eigenvalues_nnn[i] * probs_x)
-            
         # Transverse Field Z interactions
         for i in range(self.n):
             energy -= self.h * sum(self.eigenvalues_z[i] * probs_z)
-
         return energy
     
     def ansatz(self, params):
@@ -320,7 +311,8 @@ def train_config_worker(k, h, n_qubits, n_layers):
     if not stop:
         print(f"[{os.getpid()}] Warning: Reached max attempts ({max_attempts}) without hitting error threshold for k={k}, h={h}.")
 
-    filename = f"vqe_params_k{k}_h{h}.pt"
+    PRECALCULATED_DIR.mkdir(parents=True, exist_ok=True)
+    filename = PRECALCULATED_DIR / f"vqe_params_k{k}_h{h}.pt"
     torch.save(vqe.parameters_vqe.detach(), filename)
     print(f"[{os.getpid()}] ✓ Saved parameters to {filename}")
     
@@ -335,7 +327,7 @@ def train_config_worker(k, h, n_qubits, n_layers):
         "relative_error": float(err),
         "best_epoch": int(best_epoch)
     }
-    metadata_file = f"vqe_metadata_k{k}_h{h}.json"
+    metadata_file = PRECALCULATED_DIR / f"vqe_metadata_k{k}_h{h}.json"
     with open(metadata_file, 'w') as f:
         json.dump(metadata, f, indent=2)
     print(f"[{os.getpid()}] ✓ Saved metadata to {metadata_file}")

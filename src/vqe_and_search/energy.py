@@ -61,7 +61,7 @@ if __name__ == "__main__":
 
     k = 0.5
     h = 1.0
-    from VQE import VQE
+    from src.vqe_and_search.VQE import VQE
     from time import perf_counter
     print("begin training")
     t1=perf_counter()

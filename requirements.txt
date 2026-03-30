@@ -1,13 +1,16 @@
 pennylane
+numpy
 jax
 optax
 matplotlib
 torch
+tqdm
 pennylane-lightning-gpu
 optuna
 optuna-dashboard
 plotly
 pennylane-qiskit
+qiskit-aer
 nvidia-pyindex
 nvidia-cudnn
 
