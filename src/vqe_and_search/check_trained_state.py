@@ -3,9 +3,13 @@ import pennylane as qml
 from pathlib import Path
 import src.vqe_and_search.energy as energy
 
+<<<<<<< HEAD:src/check_trained_state.py
+npzfile = np.load("../../../vqe_states.npz")
+=======
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 npzfile = np.load(PROJECT_ROOT / "vqe_states.npz")
+>>>>>>> c47cc3749eb1166e5a3423088311dfe8ac6552bc:src/vqe_and_search/check_trained_state.py
 print(npzfile.files)
 
 i=0
@@ -45,11 +49,19 @@ from time import perf_counter
 
 ttot=0
 ttott=0
+<<<<<<< HEAD:src/check_trained_state.py
+# Check normalization
+#sum=0
+#for i in range(len(params)):
+#    sum += params[i]**2
+#dist = np.sqrt(sum)
+=======
 
 sum=0
 # for i in range(len(params)):
 #     sum += params[i]**2
 # dist = np.sqrt(sum)
+>>>>>>> c47cc3749eb1166e5a3423088311dfe8ac6552bc:src/vqe_and_search/check_trained_state.py
 
 cose=np.empty((len(npzfile["ks"]),len(npzfile["hs"])))
 for i,k in enumerate(npzfile["ks"]):

@@ -18,8 +18,11 @@ seed = 123456
 num_qubits = 8 # Number of spins in the Hamiltonian (= number of qubits)
 side = 20     # Discretization of the Phase Diagram
 
-import os
-os.makedirs("plots_dep_channel", exist_ok=True)
+answer = input("noise y or n?").lower().strip()
+if answer == "y":
+    noise_strength = 0.01
+elif answer == "n":
+    noise_strength = None
 
 
 def get_H(num_spins, k, h):
@@ -168,9 +171,10 @@ vectorized_qcnn_circuit = vmap(jit(qcnn_circuit), in_axes=(None, 0))
 
 # Draw the QCNN Architecture
 fig,ax = qml.draw_mpl(qcnn_circuit)(np.arange(num_params), psis[0,0])
-plt.close(fig)
+fig.savefig("circuito_QCNN.png", dpi=300, bbox_inches="tight")
 
-def qcnn_ansatz_noisy(num_qubits, params, current_noise_strength):
+
+def qcnn_ansatz_noisy(num_qubits, params):
     """Ansatz of the QCNN model
     Repetitions of the convolutional and pooling blocks
     until only 2 wires are left unmeasured
@@ -183,39 +187,41 @@ def qcnn_ansatz_noisy(num_qubits, params, current_noise_strength):
         else:
             groups = wires[:-1].reshape(-1, 2)
             qml.RY(params[index], wires=int(wires[-1]))
-            if current_noise_strength > 0:
-                qml.DepolarizingChannel(current_noise_strength, wires=int(wires[-1]))
+            if answer == "y":
+                qml.DepolarizingChannel(noise_strength, wires=int(wires[-1]))
             index += 1
 
         for group in groups:
             qml.CNOT(wires=[int(group[0]), int(group[1])])
-            if current_noise_strength > 0:
-                qml.DepolarizingChannel(current_noise_strength, wires=int(group[0]))
-                qml.DepolarizingChannel(current_noise_strength, wires=int(group[1]))
+            if answer == "y":
+                qml.DepolarizingChannel(noise_strength, wires=int(group[0]))
+                qml.DepolarizingChannel(noise_strength, wires=int(group[1]))
             for wire in group:
                 qml.RY(params[index], wires=int(wire))
-                if current_noise_strength > 0:
-                    qml.DepolarizingChannel(current_noise_strength, wires=int(wire))
+                if answer == "y":
+                    qml.DepolarizingChannel(noise_strength, wires=int(wire))
                 index += 1
         return index
 
     # Pooiling block
     def pool(wires, params, index):
         for wire_pool, wire in zip(wires[0::2], wires[1::2]):
+            if answer == "y":
+                qml.DepolarizingChannel(noise_strength, wires=int(wire_pool))
             m_0 = qml.measure(int(wire_pool))
             # Nota: dopo una misura non mettiamo rumore perché lo stato è collassato
             qml.cond(m_0 == 0, qml.RX)(params[index], wires=int(wire))
             qml.cond(m_0 == 1, qml.RX)(params[index + 1], wires=int(wire))
             # Dopo le RX condizionali, aggiungiamo rumore sui qubit ancora attivi
-            if current_noise_strength > 0:
-                qml.DepolarizingChannel(current_noise_strength, wires=int(wire))
+            if answer == "y":
+                qml.DepolarizingChannel(noise_strength, wires=int(wire))
             index += 2
             wires = np.delete(wires, np.where(wires == wire_pool))
 
         if len(wires) % 2 != 0:
             qml.RX(params[index], wires=int(wires[-1]))
-            if current_noise_strength > 0:
-                qml.DepolarizingChannel(current_noise_strength, wires=int(wires[-1]))
+            if answer == "y":
+                qml.DepolarizingChannel(noise_strength, wires=int(wires[-1]))
             index += 1
         return index, wires
 
@@ -226,8 +232,8 @@ def qcnn_ansatz_noisy(num_qubits, params, current_noise_strength):
     # Initial layer: apply RY to all wires.
     for wire in active_wires:
         qml.RY(params[index], wires=int(wire))
-        if current_noise_strength > 0:
-            qml.DepolarizingChannel(current_noise_strength, wires=int(wire))
+        if answer == "y":
+            qml.DepolarizingChannel(noise_strength, wires=int(wire))
         index += 1
 
     # Repeatedly apply convolution and pooling until there are 2 unmeasured wires
@@ -239,12 +245,27 @@ def qcnn_ansatz_noisy(num_qubits, params, current_noise_strength):
     # Final layer: apply RY to the remaining active wires.
     for wire in active_wires:
         qml.RY(params[index], wires=int(wire))
-        if current_noise_strength > 0:
-            qml.DepolarizingChannel(current_noise_strength, wires=int(wire))
+        if answer == "y":
+            qml.DepolarizingChannel(noise_strength, wires=int(wire))
         index += 1
     return index, active_wires
 
-num_params, output_wires = qcnn_ansatz_noisy(num_qubits, [0]*100, 0.0)
+num_params, output_wires = qcnn_ansatz_noisy(num_qubits, [0]*100)
+
+
+if answer == "y":
+    dev = qml.device("default.mixed", wires=num_qubits)
+elif answer == "n":
+    dev = qml.device("default.qubit", wires=num_qubits)
+
+@qml.qnode(dev)
+def qcnn_noisy(params, state):
+    qml.StatePrep(state, wires=range(num_qubits), normalize=True)
+    _, output_wires = qcnn_ansatz_noisy(num_qubits, params)
+    return qml.probs([int(k) for k in output_wires])
+
+# Vectorized circuit through vmap
+vectorized_qcnn_noisy = vmap(jit(qcnn_noisy), in_axes=(None, 0))
 
 
 def cross_entropy(pred, Y, T):
@@ -312,63 +333,45 @@ plt.xlabel("Epochs"), plt.ylabel("Cross-Entropy Loss")
 plt.title("Figure 4. QCNN Training Cross-Entropy Loss Curve")
 plt.legend()
 plt.grid()
-plt.savefig("plots_dep_channel/qcnn_loss_curve.png")
-plt.close()
+plt.show()
 
 
-noise_levels = np.arange(0.0, 1.05, 0.05)
+# Take the predicted classes for each point in the phase diagram
+predicted_classes = np.argmax(
+    vectorized_qcnn_noisy(trained_params, psis.reshape(-1, 2**num_qubits)),
+    axis=1
+)
 
-for ns in noise_levels:
-    print(f"Evaluating and plotting phase diagram for noise strength: {ns:.2f}")
+colors = ['#80bfff', '#fff2a8',  '#80f090', '#da8080',]
+phase_labels = ["Ferromagnetic", "Antiphase", "Paramagnetic", "Trash Class",]
+cmap = ListedColormap(colors)
 
-    @qml.qnode(qml.device("default.mixed", wires=num_qubits))
-    def qcnn_noisy_eval(params, state):
-        qml.StatePrep(state, wires=range(num_qubits), normalize=True)
-        _, output_wires = qcnn_ansatz_noisy(num_qubits, params, ns)
+bounds = [-0.5, 0.5, 1.5, 2.5, 3.5]
+norm = BoundaryNorm(bounds, cmap.N)
 
-        return qml.probs([int(k) for k in output_wires])
+# Plot the predictions over the phase diagram
+plt.figure(figsize=(4,4), constrained_layout=True)
+plt.imshow(
+    predicted_classes.reshape(side, side),
+    cmap=cmap,
+    norm=norm,
+    aspect="auto",
+    origin="lower",
+    extent=[0, 1, 0, 2]
+)
 
-    vectorized_qcnn_noisy_eval = vmap(jit(qcnn_noisy_eval), in_axes=(None, 0))
+# Plot the transition lines (Ising and KT) for reference.
+k_vals1 = np.linspace(0.0, 0.5, 50)
+k_vals2 = np.linspace(0.5, 1.0, 50)
+plt.plot(k_vals1, ising_transition(k_vals1), 'k')
+plt.plot(k_vals2, kt_transition(k_vals2), 'k')
+plt.plot(k_vals2, bkt_transition(k_vals2), 'k', ls = '--')
 
-    # Take the predicted classes for each point in the phase diagram
-    predicted_classes = np.argmax(
-        vectorized_qcnn_noisy_eval(trained_params, psis.reshape(-1, 2**num_qubits)),
-        axis=1
-    )
+for color, phase in zip(colors, phase_labels[:-1]):
+    plt.scatter([], [], color=color, label=phase, edgecolors='black')
+plt.plot([], [], 'k', label='Transition lines')
 
-    colors = ['#80bfff', '#fff2a8',  '#80f090', '#da8080',]
-    phase_labels = ["Ferromagnetic", "Antiphase", "Paramagnetic", "Trash Class",]
-    cmap = ListedColormap(colors)
-
-    bounds = [-0.5, 0.5, 1.5, 2.5, 3.5]
-    norm = BoundaryNorm(bounds, cmap.N)
-
-    # Plot the predictions over the phase diagram
-    plt.figure(figsize=(4,4), constrained_layout=True)
-    plt.imshow(
-        predicted_classes.reshape(side, side),
-        cmap=cmap,
-        norm=norm,
-        aspect="auto",
-        origin="lower",
-        extent=[0, 1, 0, 2]
-    )
-
-    # Plot the transition lines (Ising and KT) for reference.
-    k_vals1 = np.linspace(0.0, 0.5, 50)
-    k_vals2 = np.linspace(0.5, 1.0, 50)
-    plt.plot(k_vals1, ising_transition(k_vals1), 'k')
-    plt.plot(k_vals2, kt_transition(k_vals2), 'k')
-    plt.plot(k_vals2, bkt_transition(k_vals2), 'k', ls = '--')
-
-    for color, phase in zip(colors, phase_labels[:-1]):
-        plt.scatter([], [], color=color, label=phase, edgecolors='black')
-    plt.plot([], [], 'k', label='Transition lines')
-
-    plt.xlabel("k"), plt.ylabel("h")
-    plt.title(f"Figure 5. QCNN Classification (Noise: {int(np.round(ns*100))}%)")
-    plt.legend()
-    plt.savefig(f"plots_dep_channel/phase_diagram_noise_{int(np.round(ns*100)):03d}.png")
-    plt.close()
-
-print("All noise levels processed successfully! Check the 'plots_dep_channel' directory.")
+plt.xlabel("k"), plt.ylabel("h")
+plt.title("QCNN Classification (Noise 95%)")
+plt.legend()
+plt.savefig("QCNN_Classification_Noise(95%)")

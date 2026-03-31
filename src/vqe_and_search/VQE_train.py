@@ -186,5 +186,9 @@ if __name__ == "__main__":
         energy_histories[y, x] = energy_history
 
     # 4. Salvataggio
+<<<<<<< HEAD:src/VQE_train.py
+    np.savez("../../../vqe_states.npz", psis=psis, ks=ks, hs=hs, phases=phases)
+=======
     np.savez(PROJECT_ROOT / "vqe_states.npz", psis=psis, ks=ks, hs=hs, phases=phases, energy_histories=energy_histories)
+>>>>>>> c47cc3749eb1166e5a3423088311dfe8ac6552bc:src/vqe_and_search/VQE_train.py
     print("Calcolo completato e stati salvati.")

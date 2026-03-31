@@ -18,8 +18,17 @@ seed = 123456
 num_qubits = 8 # Number of spins in the Hamiltonian (= number of qubits)
 side = 20     # Discretization of the Phase Diagram
 
+<<<<<<< HEAD:src/Flip_sup.py
+answer = input("noise y or n?").lower().strip()
+if answer == "y":
+    noise_strength = 0.20 # probabilità di bit‑flip
+elif answer == "n":
+    noise_strength = None
+
+=======
 import os
 os.makedirs("plots_flip_sup", exist_ok=True)
+>>>>>>> c47cc3749eb1166e5a3423088311dfe8ac6552bc:src/classification_and_unsupervised/Flip_sup.py
 
 def get_H(num_spins, k, h):
     """Construction function the ANNNI Hamiltonian (J=1)"""
