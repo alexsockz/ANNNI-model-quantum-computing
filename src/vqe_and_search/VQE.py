@@ -1,0 +1,404 @@
+import pennylane as qml
+from torch import optim
+from torch import rand, zeros,full,rand, remainder, no_grad, pow, sum, manual_seed, tensor
+import torch
+import torch.nn as nn
+import numpy as np
+from qiskit_aer.noise import NoiseModel, depolarizing_error
+from qiskit_aer import AerSimulator
+import os
+from time import perf_counter
+import torch
+import json
+from pathlib import Path
+from src.vqe_and_search.ground_state_at_borders import calc_state
+import src.vqe_and_search.energy as energy
+
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
+os.environ["JAX_PLATFORM_NAME"] = "cpu"
+os.environ["JAX_QUIET_STARTUP"] = "1"
+os.environ["OMP_NUM_THREADS"] = "1"
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PRECALCULATED_DIR = PROJECT_ROOT / "precalculated"
+
+
+# config.update("jax_enable_x64", True)
+
+class VQE:
+    def __init__(self, n_wires, n_layers, k, h, j=1, shots=1000, patience=30, param_init:str="random", noise=False): #supervised=true
+        self.n = n_wires
+        self.m = n_layers
+        self.k = k
+        self.h = h
+        self.j = j
+        self.noise = noise
+        self.early_stopping_patience = patience
+        self.shots = shots
+        
+        # 1. Device Selection for better performances depending on available devices on computer
+        #qubit = cpu
+        if self.noise==True:
+            noise_model = NoiseModel()
+            error = depolarizing_error(0.01, 1)  # 1-qubit depolarizing
+            noise_model.add_all_qubit_quantum_error(error, ['u1', 'u2', 'u3'])
+
+            self.dev = qml.device("qiskit.aer", wires=self.n, noise_model=noise_model)
+        elif n_wires < 15:
+            self.dev = qml.device("lightning.qubit", wires=self.n)
+        else:
+            try:
+                self.dev = qml.device("lightning.gpu", wires=self.n)
+            except Exception:
+                self.dev = qml.device("lightning.qubit", wires=self.n)
+        
+        # 2. Setup the QNode ONCE during init
+        # Using adjoint for lightning is much faster if shots=None, 
+        # this is because it Computes gradients analytically using the adjoint (reverse) of the quantum circuit's unitary operator, but it's unrealistic
+        # but for finite shots, parameter-shift is correct.
+        # Computes gradients numerically using finite differences
+        # For each parameter, it evaluates the circuit twice: once at θ+π/2 and once at θ-π/2
+        # Much slower but realistic hardware simulation with shot-based measurements
+        if shots==None:
+            self.qnode = qml.QNode(self._train_circuit, self.dev, interface="torch", diff_method="best")
+        else:    
+            self.qnode = qml.QNode(self._train_circuit, self.dev, interface="torch", diff_method="parameter-shift")
+        self.qnode._set_shots(self.shots)
+
+        # 3. Param Init
+        # machine learning stuff, choose a way to start the random weights, zeros and small random
+        if param_init=="random":
+            self.parameters_vqe = nn.Parameter(rand((self.m, self.n)) * 2 * np.pi, requires_grad=True)
+        elif param_init=="zeros":
+            self.parameters_vqe = nn.Parameter(zeros((self.m, self.n)), requires_grad=True)
+        elif param_init=="pi":
+            self.parameters_vqe = nn.Parameter(full((self.m, self.n),np.pi), requires_grad=True)
+        elif param_init=="small_random":
+            self.parameters_vqe = nn.Parameter(rand((self.m, self.n)) * 0.01, requires_grad=True)
+        elif param_init=="precalc":
+            phase = self.get_phase(self.k, self.h)
+            if phase == 0:
+                file_name = "vqe_params_k0_h0.pt"
+            elif phase == 1:
+                file_name = "vqe_params_k1_h0.pt"
+            else:
+                file_name = "vqe_params_k0_h2.pt"
+            loaded_params = torch.load(PRECALCULATED_DIR / file_name, weights_only=True)
+            self.parameters_vqe = nn.Parameter(loaded_params, requires_grad=True)
+
+        # Pre-calculate bitstrings for the 2^n states in bigendian order
+        self.bitstrings = tensor([[(i >> (self.n - 1 - j)) & 1 for j in range(self.n)] for i in range(2**self.n)], dtype=torch.float64)
+
+        # Pre-calculate eigenvalues for all Hamiltonian terms to make training extremely fast
+        self.eigenvalues_nn = []
+        for i in range(self.n - 1):
+            self.eigenvalues_nn.append(pow(-1.0, sum(self.bitstrings[:, [i, i+1]], dim=1)))
+            
+        self.eigenvalues_nnn = []
+        for i in range(self.n - 2):
+            self.eigenvalues_nnn.append(pow(-1.0, sum(self.bitstrings[:, [i, i+2]], dim=1)))
+            
+        self.eigenvalues_z = []
+        for i in range(self.n):
+            self.eigenvalues_z.append(pow(-1.0, sum(self.bitstrings[:, [i]], dim=1)))
+
+    # Using 'probs' is often more stable for gradients than 'counts', 
+    # but it represents the exact same hardware reality (sampling). 
+    # using expvalue is irrealistic since you don't have access to the computed matrix   
+    def _train_circuit(self, params, basis="Z",starting_state=None):
+
+        if(starting_state!=None):
+            qml.StatePrep(starting_state, wires=range(self.n), normalize = True)
+        # The ansatz must be purely gate operations
+        self.ansatz(params)
+        
+        # Apply basis rotation: Hadamard to measure in X basis
+        if basis == "X":
+            for i in range(self.n): 
+                qml.Hadamard(wires=i)
+        
+        # Measure in computational basis after basis rotation
+        return qml.probs(wires=range(self.n))        
+    
+    def get_phase(self,k, h):
+        """Get the phase from the DMRG transition lines"""
+        # If under the Ising Transition Line (Left side)
+        if k < .5 and h < self.ising_transition(k):
+            return 0 # Ferromagnetic
+        # If under the Kosterlitz-Thouless Transition Line (Right side)
+
+        elif k > .5 and h < self.kt_transition(k):
+            return 1 # Antiphase
+        return 2 # else i
+    
+
+    def kt_transition(self,k):
+        """Kosterlitz-Thouless transition line"""
+        return 1.05 * np.sqrt((k - 0.5) * (k - 0.1))
+
+    def ising_transition(self,k):
+        """Ising transition line"""
+        return np.where(k == 0, 1, (1 - k) * (1 - np.sqrt((1 - 3 * k + 4 * k**2) / (1 - k))) / np.maximum(k, 1e-9))
+
+    def bkt_transition(self,k):
+        """Floating Phase transition line"""
+        return 1.05 * (k - 0.5)
+
+    def train_VQE(self, epochs=3000, learning_rate=0.151315, scheduler_patience=12, scheduler_factor=0.75816, optimizer_choice="Adam", with_scheduler=True, non_zero_state=False):
+        
+        phase=self.get_phase(self.k, self.h)
+
+        starting_state=None
+        if (non_zero_state==True):
+            if(phase==0):
+                starting_state,_=calc_state(self.n,0,0)
+            elif(phase==1):
+                starting_state,_=calc_state(self.n,1%2,0)
+            else:
+                starting_state,_=calc_state(self.n,0,2)
+            starting_state=torch.tensor(starting_state,dtype=torch.complex128)
+
+        # various variables to keep track of what is happening to the model
+        best_energy = float('inf')
+        best_params = self.parameters_vqe.detach().clone()
+        patience_counter = 0
+        best_epoch = epochs
+        last_epoch = epochs
+
+        energy_history = []
+        lr_history = []
+
+        # during training it might happen that the pit you want to fall in 
+        # gets too small for the learning rate to let you jump to a lower place
+        # this is solvable by making the learning rate smaller,
+        # a scheduler reduce the learning rate depending on various parameters
+        # this scheduler, after "patiance" number of steps, "looses it's patiance"
+        # and reduce the learning rate by multipling the rate by the "factor"
+        # Averaged Stochastic Gradient Descent does not need a scheduling for learning rate
+        scheduler_decision = with_scheduler and optimizer_choice != "ASGD"
+
+        if optimizer_choice == "ASGD": # Averaged Stochastic Gradient Descent 
+            optimizer = optim.ASGD([self.parameters_vqe], lr=learning_rate, weight_decay=0)
+        else: # Adaptive Moment Estimation (the best one)
+            optimizer = optim.Adam([self.parameters_vqe], lr=learning_rate, weight_decay=0)
+        
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', 
+                                                         patience=scheduler_patience, 
+                                                         factor=scheduler_factor)
+        
+
+        # now the training begins
+        for epoch in range(epochs):
+            # Delete old gradients
+            optimizer.zero_grad()
+            
+            # Use the pre-initialized qnode to measure in both Z and X bases (with shots)
+            probs_z = self.qnode(self.parameters_vqe, basis="Z", starting_state=starting_state)
+            probs_x = self.qnode(self.parameters_vqe, basis="X", starting_state=starting_state)
+            
+            # Compute energy from shot-based probabilities
+            energy = self._compute_energy_from_probs(probs_z, probs_x)
+            energy_val = energy.item()
+            
+            # remember the best model
+            if energy_val < best_energy:
+                best_energy = energy_val
+                best_params = self.parameters_vqe.detach().clone()
+                patience_counter = 0
+                best_epoch = epoch
+            else:
+                # if i don't get better this epoch add to the counter
+                patience_counter += 1
+
+            # if too much time elapses without getting better lets stop
+            if patience_counter >= self.early_stopping_patience:
+                last_epoch=epoch
+                break
+            
+            energy_history.append(energy_val)
+            lr_history.append(optimizer.param_groups[0]['lr'])
+
+            # now that i have a gradient i propagate the change to all the weights used to calculate the energy
+            # this is basically black magic, torch is magic
+            energy.backward()
+            optimizer.step()
+
+            # if i'm using the scheduler do this
+            if scheduler_decision:
+                scheduler.step(energy_val)
+
+            # no grad Turns off PyTorch's autograd engine (no backpropagation tracking)
+            # Saves memory and computation time
+            # Tensors created/modified inside won't track computational history
+            # During training, you want gradients only for optimizer.step() and energy.backward()
+            # Operations that don't affect training (like parameter cleanup or inference) should skip gradient overhead
+            # Saves memory and speeds up non-learning operations
+
+            with no_grad():
+                # Keep parameters in [0, 2pi]
+                # might be wrong?? TODO check
+                self.parameters_vqe.copy_(remainder(self.parameters_vqe, 2 * np.pi))
+
+        with no_grad():
+            self.parameters_vqe.copy_(best_params)
+
+        return best_energy, best_epoch, last_epoch, energy_history, lr_history
+
+    def _compute_energy_from_probs(self, probs_z, probs_x):
+        """
+        Calculates expectation values from shot-based probabilities.
+        Realistic hardware simulation: uses finite-shot measurement outcomes.
+        """
+        probs_z = probs_z.float()
+        probs_x = probs_x.float()
+        energy = tensor(0.0, dtype=torch.float64)
+        # Nearest Neighbor XX interactions
+        for i in range(self.n - 1):
+            energy -= self.j * sum(self.eigenvalues_nn[i] * probs_x)
+        # Next-Nearest Neighbor XX interactions
+        for i in range(self.n - 2):
+            energy += self.k * sum(self.eigenvalues_nnn[i] * probs_x)
+        # Transverse Field Z interactions
+        for i in range(self.n):
+            energy -= self.h * sum(self.eigenvalues_z[i] * probs_z)
+        return energy
+    
+    def ansatz(self, params):
+        # ry O     X
+        # ry X O
+        # ry   X O
+        # ry     X O
+        for j in range(self.m):
+            for i in range(self.n):
+                qml.RY(params[j, i], wires=i)
+            for i in range(self.n):
+                qml.CNOT(wires=[i, (i + 1) % self.n])
+
+def train_config_worker(k, h, n_qubits, n_layers):
+    stop = False
+    best_energy = 0
+    theoretical_energy = 0
+    relative_error = float('inf')
+    best_epoch = 0
+    
+    attempt = 0
+    max_attempts = 5 # Prevent infinite loops
+    
+    while not stop and attempt < max_attempts:
+        attempt += 1
+        
+        print(f"\n{'='*50}")
+        print(f"[{os.getpid()}] Training VQE with k={k}, h={h} | Attempt {attempt}/{max_attempts}")
+        print(f"{'='*50}")
+        
+        vqe, theoretic, best_energy, best_epoch, last_epoch, energy_history, lr_history = trainer(k,h,n_qubits,n_layers)
+        
+        if abs(theoretic) > 1e-9:
+            err = abs((best_energy - theoretic) / theoretic)
+        else:
+            err = abs(best_energy - theoretic)
+            
+        print(f"[{os.getpid()}] VQE Energy: {best_energy:.6f} (k={k}, h={h})")
+        print(f"[{os.getpid()}] Theoretical Energy: {theoretic:.6f}")
+        print(f"[{os.getpid()}] Relative Error: {err:.6%}")
+        
+        if err < 0.002:
+            stop = True
+            print(f"[{os.getpid()}] Error is small enough for k={k}, h={h}.")
+        else:
+            print(f"[{os.getpid()}] Error {err:.6%} is still too high. Retrying...")
+            
+    if not stop:
+        print(f"[{os.getpid()}] Warning: Reached max attempts ({max_attempts}) without hitting error threshold for k={k}, h={h}.")
+
+    PRECALCULATED_DIR.mkdir(parents=True, exist_ok=True)
+    filename = PRECALCULATED_DIR / f"vqe_params_k{k}_h{h}.pt"
+    torch.save(vqe.parameters_vqe.detach(), filename)
+    print(f"[{os.getpid()}] ✓ Saved parameters to {filename}")
+    
+    # Save metadata
+    metadata = {
+        "k": k,
+        "h": h,
+        "n_qubits": n_qubits,
+        "n_layers": n_layers,
+        "vqe_energy": float(best_energy),
+        "theoretical_energy": float(theoretic),
+        "relative_error": float(err),
+        "best_epoch": int(best_epoch)
+    }
+    metadata_file = PRECALCULATED_DIR / f"vqe_metadata_k{k}_h{h}.json"
+    with open(metadata_file, 'w') as f:
+        json.dump(metadata, f, indent=2)
+    print(f"[{os.getpid()}] ✓ Saved metadata to {metadata_file}")
+    
+    return metadata
+
+def trainer(k,h,n_qubits,n_layers):
+        vqe = VQE(n_wires=n_qubits, n_layers=n_layers, k=k, h=h, param_init="precalc", shots=None, noise=False)
+        best_energy, best_epoch, last_epoch, energy_history, lr_history = vqe.train_VQE(non_zero_state=False)
+        
+        # safely extract scalar to a standard python float
+        theoretic = float(energy.theoretical_energy(n_qubits, k, h))
+        return vqe, theoretic, best_energy, best_epoch, last_epoch, energy_history, lr_history
+
+if __name__ == "__main__":
+    import matplotlib.pyplot as plt
+
+    # Create a simple VQE instance
+    n_qubits = 4
+    n_layers = 2
+    vqe = VQE(n_wires=n_qubits, n_layers=n_layers, k=0.5, h=0.5, param_init="random", shots=None, noise=False)
+
+    # Create a figure to draw the circuit
+    fig, ax = plt.subplots(figsize=(14, 6))
+
+    # Draw the circuit using PennyLane's draw function
+    qml.draw_mpl(vqe.qnode, decimals=2)(vqe.parameters_vqe)
+    plt.tight_layout()
+    plt.savefig("vqe_circuit.png", dpi=150, bbox_inches='tight')
+    plt.show()
+
+    print("Circuit saved as vqe_circuit.png")
+    # print("start")
+    # t1 = perf_counter()
+    # n_qubits = 8
+    # n_layers = 9
+    # k=0.2
+    # h=0.4
+
+    # vqe, theoretic, best_energy, best_epoch, last_epoch, energy_history, lr_history=trainer(k,h,n_qubits,n_layers)
+    # import matplotlib.pyplot as plt
+
+    # plt.figure(figsize=(10, 6))
+    # plt.plot(energy_history)
+    # plt.xlabel('Epoch')
+    # plt.ylabel('Energy')
+    # plt.title('VQE Training Energy History')
+    # plt.grid(True)
+    # plt.savefig("qvefrombasisweights.png")
+    # print(abs((best_energy-theoretic)/theoretic)*100)
+    # print(f"Total time: {perf_counter() - t1:.2f}s")
+
+    # import multiprocessing as mp
+
+    # print("start")
+    # t1 = perf_counter()
+
+    # n_qubits = 8
+    # n_layers = 9
+    # configs = [(0, 0), (1,0), (0, 2)]
+
+    # worker_args = [(k, h, n_qubits, n_layers) for (k, h) in configs]
+    # num_workers = min(len(configs), mp.cpu_count())
+    
+    # print(f"Running multiprocessing with {num_workers} workers...")
+    
+    # # Using 'spawn' context can sometimes help prevent issues with PyTorch/JAX multiprocessing in Linux
+    # mp.set_start_method('spawn', force=True)
+    
+    # with mp.Pool(processes=num_workers) as pool:
+    #     results = pool.starmap(train_config_worker, worker_args)
+        
+    # print(f"\nAll configurations processed.")
+    # print(f"Total time: {perf_counter() - t1:.2f}s")
