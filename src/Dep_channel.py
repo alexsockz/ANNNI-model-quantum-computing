@@ -20,7 +20,7 @@ side = 20     # Discretization of the Phase Diagram
 
 answer = input("noise y or n?").lower().strip()
 if answer == "y":
-    noise_strength = 0.74
+    noise_strength = 0.01
 elif answer == "n":
     noise_strength = None
 
@@ -171,6 +171,7 @@ vectorized_qcnn_circuit = vmap(jit(qcnn_circuit), in_axes=(None, 0))
 
 # Draw the QCNN Architecture
 fig,ax = qml.draw_mpl(qcnn_circuit)(np.arange(num_params), psis[0,0])
+fig.savefig("circuito_QCNN.png", dpi=300, bbox_inches="tight")
 
 
 def qcnn_ansatz_noisy(num_qubits, params):
@@ -205,6 +206,8 @@ def qcnn_ansatz_noisy(num_qubits, params):
     # Pooiling block
     def pool(wires, params, index):
         for wire_pool, wire in zip(wires[0::2], wires[1::2]):
+            if answer == "y":
+                qml.DepolarizingChannel(noise_strength, wires=int(wire_pool))
             m_0 = qml.measure(int(wire_pool))
             # Nota: dopo una misura non mettiamo rumore perché lo stato è collassato
             qml.cond(m_0 == 0, qml.RX)(params[index], wires=int(wire))
@@ -369,6 +372,6 @@ for color, phase in zip(colors, phase_labels[:-1]):
 plt.plot([], [], 'k', label='Transition lines')
 
 plt.xlabel("k"), plt.ylabel("h")
-plt.title("Figure 5. QCNN Classification")
+plt.title("QCNN Classification (Noise 95%)")
 plt.legend()
-plt.show()
+plt.savefig("QCNN_Classification_Noise(95%)")

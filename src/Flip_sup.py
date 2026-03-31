@@ -20,7 +20,7 @@ side = 20     # Discretization of the Phase Diagram
 
 answer = input("noise y or n?").lower().strip()
 if answer == "y":
-    noise_strength = 0.70 # probabilità di bit‑flip
+    noise_strength = 0.20 # probabilità di bit‑flip
 elif answer == "n":
     noise_strength = None
 

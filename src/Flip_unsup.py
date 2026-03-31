@@ -12,12 +12,12 @@ config.update("jax_enable_x64", True)
 seed = 123456
 
 # Setting our constants
-num_qubits = 8 # Number of spins in the Hamiltonian (= number of qubits)
-side = 20      # Discretization of the Phase Diagram
+num_qubits = 8  # Number of spins in the Hamiltonian (= number of qubits)
+side = 20  # Discretization of the Phase Diagram
 
 answer = input("noise y or n?").lower().strip()
 if answer == "y":
-    noise_strength = 0.75
+    noise_strength = 0.50
 elif answer == "n":
     noise_strength = None
 
@@ -28,7 +28,7 @@ def get_H(num_spins, k, h):
     # Interaction between spins (neighbouring):
     H = -1 * (qml.PauliX(0) @ qml.PauliX(1))
     for i in range(1, num_spins - 1):
-        H = H  - (qml.PauliX(i) @ qml.PauliX(i + 1))
+        H = H - (qml.PauliX(i) @ qml.PauliX(i + 1))
 
     # Interaction between spins (next-neighbouring):
     for i in range(0, num_spins - 2):
@@ -40,33 +40,39 @@ def get_H(num_spins, k, h):
 
     return H
 
+
 def kt_transition(k):
     """Kosterlitz-Thouless transition line"""
     return 1.05 * np.sqrt((k - 0.5) * (k - 0.1))
 
+
 def ising_transition(k):
     """Ising transition line"""
-    return np.where(k == 0, 1, (1 - k) * (1 - np.sqrt((1 - 3 * k + 4 * k**2) / (1 - k))) / np.maximum(k, 1e-9))
+    return np.where(k == 0, 1, (1 - k) * (1 - np.sqrt((1 - 3 * k + 4 * k ** 2) / (1 - k))) / np.maximum(k, 1e-9))
+
 
 def bkt_transition(k):
     """Floating Phase transition line"""
     return 1.05 * (k - 0.5)
 
+
 def get_phase(k, h):
     """Get the phase from the DMRG transition lines"""
     # If under the Ising Transition Line (Left side)
     if k < .5 and h < ising_transition(k):
-        return 0 # Ferromagnetic
+        return 0  # Ferromagnetic
     # If under the Kosterlitz-Thouless Transition Line (Right side)
 
     elif k > .5 and h < kt_transition(k):
-        return 1 # Antiphase
-    return 2 # else it is Paramagnetic
+        return 1  # Antiphase
+    return 2  # else it is Paramagnetic
+
 
 def diagonalize_H(H_matrix):
     """Returns the lowest eigenvector of the Hamiltonian matrix."""
     _, psi = jnp.linalg.eigh(H_matrix)  # Compute eigenvalues and eigenvectors
     return jnp.array(psi[:, 0], dtype=jnp.complex64)  # Return the ground state
+
 
 # Create meshgrid of the parameter space
 ks = np.linspace(0, 1, side)
@@ -74,12 +80,12 @@ hs = np.linspace(0, 2, side)
 K, H = np.meshgrid(ks, hs)
 
 # Preallocate arrays for Hamiltonian matrices and phase labels.
-H_matrices = np.empty((len(ks), len(hs), 2**num_qubits, 2**num_qubits))
+H_matrices = np.empty((len(ks), len(hs), 2 ** num_qubits, 2 ** num_qubits))
 phases = np.empty((len(ks), len(hs)), dtype=int)
 
 for x, k in enumerate(ks):
     for y, h in enumerate(hs):
-        H_matrices[y, x] = np.real(qml.matrix(get_H(num_qubits, k, h))) # Get Hamiltonian matrix
+        H_matrices[y, x] = np.real(qml.matrix(get_H(num_qubits, k, h)))  # Get Hamiltonian matrix
         phases[y, x] = get_phase(k, h)  # Get the respective phase given k and h
 
 # Vectorized diagonalization
@@ -128,17 +134,20 @@ def anomaly_ansatz(n_qubit, params):
 
     return index, list(trash)
 
-num_anomaly_params, trash_wires = anomaly_ansatz(num_qubits, [0]*100)
+
+num_anomaly_params, trash_wires = anomaly_ansatz(num_qubits, [0] * 100)
+
 
 @qml.qnode(qml.device("default.qubit", wires=num_qubits))
 def anomaly_circuit(params, state):
     """QNode with QAD ansatz and expectation values of the trash wires as output"""
     # Input ground state from diagonalization
-    qml.StatePrep(state, wires=range(num_qubits), normalize = True)
+    qml.StatePrep(state, wires=range(num_qubits), normalize=True)
     # Quantum Anomaly Circuit
     _, trash_wires = anomaly_ansatz(num_qubits, params)
 
     return [qml.expval(qml.PauliZ(int(k))) for k in trash_wires]
+
 
 def anomaly_noisy(n_qubit, params):
     """Ansatz of the QAD model
@@ -151,16 +160,11 @@ def anomaly_noisy(n_qubit, params):
         for i, wire in enumerate(trash):
             target = trash[(i + 1 + shift) % len(trash)]
             qml.CZ(wires=[int(wire), int(target)])
-            if answer == "y":
-                qml.DepolarizingChannel(noise_strength, wires=int(wire))
-                qml.DepolarizingChannel(noise_strength, wires=int(target))
         # Connect each nontrash wire to a trash wire
         for i, wire in enumerate(nontrash):
             trash_idx = (i + shift) % len(trash)
             qml.CNOT(wires=[int(wire), int(trash[trash_idx])])
-            if answer == "y":
-                qml.DepolarizingChannel(noise_strength, wires=int(wire))
-                qml.DepolarizingChannel(noise_strength, wires=int(trash[trash_idx]))
+
     depth = 2  # Number of repeated block layers
     n_trashwire = n_qubit // 2
 
@@ -170,11 +174,14 @@ def anomaly_noisy(n_qubit, params):
 
     index = 0
 
+    # Layer of bitflips
+    if answer == "y":
+        for wire in np.arange(n_qubit):
+            qml.BitFlip(noise_strength, wires=int(wire))
+
     # Initial layer: apply RY rotations on all wires.
     for wire in np.arange(n_qubit):
         qml.RY(params[index], wires=int(wire))
-        if answer == "y":
-            qml.DepolarizingChannel(noise_strength, wires=int(wire))
 
         index += 1
 
@@ -186,9 +193,9 @@ def anomaly_noisy(n_qubit, params):
         wires_to_rot = np.arange(n_qubit) if shift < depth - 1 else trash
         for wire in wires_to_rot:
             qml.RY(params[index], wires=int(wire))
-            if answer == "y":
-                qml.DepolarizingChannel(noise_strength, wires=int(wire))
+
             index += 1
+
     return index, list(trash)
 
 
@@ -196,13 +203,11 @@ def anomaly_noisy(n_qubit, params):
 def anomalynode_noisy(params, state):
     """QNode with QAD ansatz and expectation values of the trash wires as output"""
     # Input ground state from diagonalization
-    qml.StatePrep(state, wires=range(num_qubits), normalize = True)
+    qml.StatePrep(state, wires=range(num_qubits), normalize=True)
     # Quantum Anomaly Circuit
     _, trash_wires = anomaly_noisy(num_qubits, params)
 
-
     return [qml.expval(qml.PauliZ(int(k))) for k in trash_wires]
-
 
 
 # Vectorize the circuit using vmap
@@ -213,7 +218,8 @@ jitted_anomalynode_noisy = jit(anomalynode_noisy)
 vectorized_anomalynode_noisy = vmap(jitted_anomalynode_noisy, in_axes=(None, 0))
 
 # Draw the QAD Architecture
-fig,ax = qml.draw_mpl(anomaly_circuit)(np.arange(num_anomaly_params), psis[0,0])
+fig, ax = qml.draw_mpl(anomaly_circuit)(np.arange(num_anomaly_params), psis[0, 0])
+
 
 def train_anomaly(num_epochs, lr, seed):
     """Training function of the QAD architecture"""
@@ -255,6 +261,7 @@ def train_anomaly(num_epochs, lr, seed):
 
     return params, loss_curve
 
+
 trained_anomaly_params, anomaly_loss_curve = train_anomaly(num_epochs=100, lr=1e-1, seed=seed)
 
 # Plot the loss curve
@@ -268,11 +275,8 @@ plt.grid()
 plt.show()
 
 # Evaluate the compression score for each state in the phase diagram
-if answer == "y":
-    compressions = vectorized_anomalynode_noisy(trained_anomaly_params, psis.reshape(-1, 2**num_qubits))
-elif answer == "n":
-    compressions = vectorized_anomaly_circuit(trained_anomaly_params, psis.reshape(-1, 2 ** num_qubits))
-compressions = jnp.mean(1 - jnp.array(compressions), axis = 0)
+compressions = vectorized_anomalynode_noisy(trained_anomaly_params, psis.reshape(-1, 2 ** num_qubits))
+compressions = jnp.mean(1 - jnp.array(compressions), axis=0)
 
 im = plt.imshow(compressions.reshape(side, side), aspect="auto", origin="lower", extent=[0, 1, 0, 2])
 
@@ -281,9 +285,9 @@ plt.plot(np.linspace(0.0, 0.5, 50), ising_transition(np.linspace(0.0, 0.5, 50)),
 plt.plot(np.linspace(0.5, 1.0, 50), kt_transition(np.linspace(0.5, 1.0, 50)), 'k')
 
 plt.plot([], [], 'k', label='Transition Lines')
-plt.scatter([0 +.3/len(ks)], [0 + .5/len(hs)], color='r', marker = 'x', label="Training point", s=50)
+plt.scatter([0 + .3 / len(ks)], [0 + .5 / len(hs)], color='r', marker='x', label="Training point", s=50)
 
-plt.legend(), plt.xlabel("k"), plt.ylabel("h"), plt.title("Phase diagram with QAD (noise 75%)")
+plt.legend(), plt.xlabel("k"), plt.ylabel("h"), plt.title("Figure 7. Phase diagram with QAD")
 cbar = plt.colorbar(im)
 cbar.set_label(r"Compression Score  $\mathcal{C}$")
-plt.savefig("QAD_Classification_Noise(75%)")
+plt.show()

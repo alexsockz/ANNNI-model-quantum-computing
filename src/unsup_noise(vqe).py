@@ -3,7 +3,6 @@ import numpy as np
 from jax import jit, vmap, value_and_grad, random, config
 from jax import numpy as jnp
 import optax
-
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap, BoundaryNorm
 
@@ -12,7 +11,7 @@ config.update("jax_enable_x64", True)
 seed = 123456
 
 # Setting our constants
-num_qubits = 8 # Number of spins in the Hamiltonian (= number of qubits)
+num_qubits = 6 # Number of spins in the Hamiltonian (= number of qubits)
 side = 20      # Discretization of the Phase Diagram
 
 answer = input("noise y or n?").lower().strip()
@@ -20,6 +19,27 @@ if answer == "y":
     noise_strength = 0.75
 elif answer == "n":
     noise_strength = None
+
+
+try:
+    npzfile = np.load("../../../vqe_states.npz", allow_pickle=True)
+    print("File loaded. Keys:", npzfile.files)
+except FileNotFoundError:
+    print("File 'vqe_results.db' non trovato. Assicurati che esista nella cartella corrente.")
+    exit()
+
+ks = npzfile["ks"]          # array dei valori di k (dimensione side)
+hs = npzfile["hs"]          # array dei valori di h (dimensione side)
+psis = npzfile["psis"]      # array degli stati: shape (len(hs), len(ks), 2**num_qubits)
+
+
+# Verifica dimensioni
+print(f"ks shape: {ks.shape}, hs shape: {hs.shape}, psis shape: {psis.shape}")
+
+
+psis = jnp.array(psis, dtype=jnp.complex64)
+
+K, H = np.meshgrid(ks, hs)
 
 
 def get_H(num_spins, k, h):
@@ -52,38 +72,6 @@ def bkt_transition(k):
     """Floating Phase transition line"""
     return 1.05 * (k - 0.5)
 
-def get_phase(k, h):
-    """Get the phase from the DMRG transition lines"""
-    # If under the Ising Transition Line (Left side)
-    if k < .5 and h < ising_transition(k):
-        return 0 # Ferromagnetic
-    # If under the Kosterlitz-Thouless Transition Line (Right side)
-
-    elif k > .5 and h < kt_transition(k):
-        return 1 # Antiphase
-    return 2 # else it is Paramagnetic
-
-def diagonalize_H(H_matrix):
-    """Returns the lowest eigenvector of the Hamiltonian matrix."""
-    _, psi = jnp.linalg.eigh(H_matrix)  # Compute eigenvalues and eigenvectors
-    return jnp.array(psi[:, 0], dtype=jnp.complex64)  # Return the ground state
-
-# Create meshgrid of the parameter space
-ks = np.linspace(0, 1, side)
-hs = np.linspace(0, 2, side)
-K, H = np.meshgrid(ks, hs)
-
-# Preallocate arrays for Hamiltonian matrices and phase labels.
-H_matrices = np.empty((len(ks), len(hs), 2**num_qubits, 2**num_qubits))
-phases = np.empty((len(ks), len(hs)), dtype=int)
-
-for x, k in enumerate(ks):
-    for y, h in enumerate(hs):
-        H_matrices[y, x] = np.real(qml.matrix(get_H(num_qubits, k, h))) # Get Hamiltonian matrix
-        phases[y, x] = get_phase(k, h)  # Get the respective phase given k and h
-
-# Vectorized diagonalization
-psis = vmap(vmap(diagonalize_H))(H_matrices)
 
 
 def anomaly_ansatz(n_qubit, params):
@@ -214,6 +202,7 @@ vectorized_anomalynode_noisy = vmap(jitted_anomalynode_noisy, in_axes=(None, 0))
 
 # Draw the QAD Architecture
 fig,ax = qml.draw_mpl(anomaly_circuit)(np.arange(num_anomaly_params), psis[0,0])
+fig.savefig("circuito_anomaly.png", dpi=300, bbox_inches="tight")
 
 def train_anomaly(num_epochs, lr, seed):
     """Training function of the QAD architecture"""
@@ -274,16 +263,23 @@ elif answer == "n":
     compressions = vectorized_anomaly_circuit(trained_anomaly_params, psis.reshape(-1, 2 ** num_qubits))
 compressions = jnp.mean(1 - jnp.array(compressions), axis = 0)
 
-im = plt.imshow(compressions.reshape(side, side), aspect="auto", origin="lower", extent=[0, 1, 0, 2])
+im = plt.imshow(compressions.reshape(len(hs), len(ks)),
+                aspect="auto",
+                origin="lower",
+                extent=[ks.min(), ks.max(), hs.min(), hs.max()],
+                cmap='viridis')  # Puoi scegliere una colormap
 
-# Plot transition lines (assuming ising_transition and kt_transition are defined)
+# Linee di transizione (definite sugli stessi intervalli di k)
 plt.plot(np.linspace(0.0, 0.5, 50), ising_transition(np.linspace(0.0, 0.5, 50)), 'k')
 plt.plot(np.linspace(0.5, 1.0, 50), kt_transition(np.linspace(0.5, 1.0, 50)), 'k')
 
-plt.plot([], [], 'k', label='Transition Lines')
-plt.scatter([0 +.3/len(ks)], [0 + .5/len(hs)], color='r', marker = 'x', label="Training point", s=50)
+# Punto di addestramento (k=ks[0], h=hs[0])
+plt.scatter([ks[0]], [hs[0]], color='r', marker='x', label="Training point", s=50)
 
-plt.legend(), plt.xlabel("k"), plt.ylabel("h"), plt.title("Phase diagram with QAD (noise 75%)")
+plt.legend()
+plt.xlabel("k")
+plt.ylabel("h")
+plt.title("Figure 7. Phase diagram with QAD")
 cbar = plt.colorbar(im)
 cbar.set_label(r"Compression Score  $\mathcal{C}$")
-plt.savefig("QAD_Classification_Noise(75%)")
+plt.show()

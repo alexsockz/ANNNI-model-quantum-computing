@@ -139,5 +139,5 @@ if __name__ == "__main__":
         phases[y, x] = phase
 
     # 4. Salvataggio
-    np.savez("vqe_states.npz", psis=psis, ks=ks, hs=hs, phases=phases)
+    np.savez("../../../vqe_states.npz", psis=psis, ks=ks, hs=hs, phases=phases)
     print("Calcolo completato e stati salvati.")

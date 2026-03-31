@@ -2,7 +2,7 @@ import numpy as np
 import energy
 import pennylane as qml
 
-npzfile = np.load("vqe_states.npz")
+npzfile = np.load("../../../vqe_states.npz")
 print(npzfile.files)
 
 i=0
@@ -42,11 +42,11 @@ from time import perf_counter
 
 ttot=0
 ttott=0
-
-sum=0
-for i in range(len(params)):
-    sum += params[i]**2
-dist = np.sqrt(sum)
+# Check normalization
+#sum=0
+#for i in range(len(params)):
+#    sum += params[i]**2
+#dist = np.sqrt(sum)
 
 cose=np.empty((len(npzfile["ks"]),len(npzfile["hs"])))
 for i,k in enumerate(npzfile["ks"]):
