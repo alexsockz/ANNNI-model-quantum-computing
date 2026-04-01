@@ -3,13 +3,13 @@ import numpy as np
 from jax import jit, vmap, value_and_grad, random, config
 from jax import numpy as jnp
 import optax
-<<<<<<<< HEAD:src/Dep_channel(VQE).py
+from jinja2 import pass_eval_context
 
 from pennylane import numpy as pnp
 from pennylane import DepolarizingChannel
-========
+
 import os
->>>>>>>> c47cc3749eb1166e5a3423088311dfe8ac6552bc:src/classification_and_unsupervised/Error_mitigation.py
+
 
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap, BoundaryNorm
@@ -22,15 +22,14 @@ seed = 123456
 num_qubits = 6 # Number of spins in the Hamiltonian (= number of qubits)
 side = 20     # Discretization of the Phase Diagram
 
-<<<<<<<< HEAD:src/Dep_channel(VQE).py
+
 answer = input("noise y or n?").lower().strip()
 if answer == "y":
     noise_strength = 0.01
 elif answer == "n":
     noise_strength = None
-========
 os.makedirs("plots_error_mitigation", exist_ok=True)
->>>>>>>> c47cc3749eb1166e5a3423088311dfe8ac6552bc:src/classification_and_unsupervised/Error_mitigation.py
+
 
 try:
     npzfile = np.load("../../../../vqe_states.npz", allow_pickle=True)
@@ -214,13 +213,11 @@ def qcnn_ansatz_noisy(num_qubits, params, current_noise_strength):
     # Pooiling block
     def pool(wires, params, index):
         for wire_pool, wire in zip(wires[0::2], wires[1::2]):
-<<<<<<<< HEAD:src/Dep_channel(VQE).py
+
             if answer == "y":
                 qml.DepolarizingChannel(noise_strength, wires=int(wire_pool))
-========
             if current_noise_strength > 0:
                 qml.DepolarizingChannel(current_noise_strength, wires=int(wire_pool))
->>>>>>>> c47cc3749eb1166e5a3423088311dfe8ac6552bc:src/classification_and_unsupervised/Error_mitigation.py
             m_0 = qml.measure(int(wire_pool))
             # Nota: dopo una misura non mettiamo rumore perché lo stato è collassato
             qml.cond(m_0 == 0, qml.RX)(params[index], wires=int(wire))
@@ -265,8 +262,13 @@ def qcnn_ansatz_noisy(num_qubits, params, current_noise_strength):
 
 num_params, output_wires = qcnn_ansatz_noisy(num_qubits, [0]*100, 0.0)
 
-@qml.qnode(qml.device("default.qubit", wires=num_qubits))
-def qcnn_circuit(params, state):
+if answer == "y":
+    dev = qml.device("default.mixed", wires=num_qubits)
+elif answer == "n":
+    dev = qml.device("default.qubit", wires=num_qubits)
+
+@qml.qnode(dev)
+def qcnn_noisy(params, state):
     """QNode with QCNN ansatz and probabilities of unmeasured qubits as output"""
     # Input ground state from diagonalization
     qml.StatePrep(state, wires=range(num_qubits), normalize = True)
@@ -275,6 +277,8 @@ def qcnn_circuit(params, state):
 
     return qml.probs([int(k) for k in output_wires])
 
+# Vectorized circuit through vmap
+vectorized_qcnn_noisy = vmap(jit(qcnn_noisy), in_axes=(None, 0))
 
 def cross_entropy(pred, Y, T):
     """Multi-class cross entropy loss function"""
@@ -345,7 +349,7 @@ plt.savefig("plots_error_mitigation/qcnn_loss_curve.png")
 plt.close()
 
 
-<<<<<<<< HEAD:src/Dep_channel(VQE).py
+
 # Take the predicted classes for each point in the phase diagram
 predicted_classes = np.argmax(
     vectorized_qcnn_noisy(trained_params, psis.reshape(-1, 2**num_qubits)),
@@ -385,7 +389,7 @@ plt.xlabel("k"), plt.ylabel("h")
 plt.title("QCNN Classification (Noise 1%)")
 plt.legend()
 plt.savefig("QCNN_Classification_Noise(1%)")
-========
+
 # Generate phase diagrams over multiple noise levels (0% to 100% in 5% steps) with error mitigation
 def qcnn_ansatz_scaled(num_qubits, params, scale, current_noise_strength):
     """Ansatz of the QCNN model with scaled noise for error mitigation."""
@@ -583,4 +587,4 @@ for ns in noise_levels:
     plt.close()
 
 print("All noise levels processed successfully! Check the 'plots_error_mitigation' directory.")
->>>>>>>> c47cc3749eb1166e5a3423088311dfe8ac6552bc:src/classification_and_unsupervised/Error_mitigation.py
+
