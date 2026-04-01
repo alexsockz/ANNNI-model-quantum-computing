@@ -32,7 +32,7 @@ os.makedirs("plots_error_mitigation", exist_ok=True)
 
 
 try:
-    npzfile = np.load("../../../../vqe_states.npz", allow_pickle=True)
+    npzfile = np.load("../../../vqe_states.npz", allow_pickle=True)
     print("File loaded. Keys:", npzfile.files)
 except FileNotFoundError:
     print("File 'vqe_results.db' non trovato. Assicurati che esista nella cartella corrente.")
