@@ -1,15 +1,12 @@
 import pennylane as qml
 import numpy as np
-from jax import jit, vmap, value_and_grad, random, config
-from jax import numpy as jnp
-import optax
-import matplotlib.pyplot as plt
-from matplotlib.colors import ListedColormap, BoundaryNorm
+from jax import config
+
 import multiprocessing as mp
-from itertools import product
+
 from tqdm import tqdm
 from pathlib import Path
-from src.vqe_and_search.VQE import VQE  # Assicurati che la classe VQE sia definita correttamente in VQE.py
+from VQE import VQE  # Assicurati che la classe VQE sia definita correttamente in VQE.py
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -18,7 +15,7 @@ config.update("jax_enable_x64", True)
 seed = 123456
 
 # Setting our constants
-num_qubits = 8          # Numero di qubit
+num_qubits = 6         # Numero di qubit
 side = 20               # Discretizzazione del diagramma di fase
 
 def compute_point(args):
@@ -105,7 +102,7 @@ def get_theoretical_energy(k, h):
     eigenvalues = np.linalg.eigvalsh(H_matrix)
     return eigenvalues[0]  # Return lowest eigenvalue
 
-def get_vqe_state(k, h, n_layers=6, epochs=500, max_retries=3, error_threshold=1):
+def get_vqe_state(k, h, n_layers=9, epochs=1000, max_retries=3, error_threshold=1):
     """
     Esegue il VQE per l'Hamiltoniana con parametri (k, h) e restituisce lo stato fondamentale approssimato.
     Retry se l'errore di run (abs((energyVqe-energyTheoretical)/energyTheoretical)*100) > error_threshold %.
@@ -113,6 +110,9 @@ def get_vqe_state(k, h, n_layers=6, epochs=500, max_retries=3, error_threshold=1
     # Ottieni l'energia teorica
     energy_theoretical = get_theoretical_energy(k, h)
     
+    saved_energy=np.inf
+    best_state=None
+    best_energy_energy_history=None
     for attempt in range(max_retries):
         # Costruisce l'Hamiltoniana
         H = get_H(num_qubits, k, h)
@@ -121,7 +121,7 @@ def get_vqe_state(k, h, n_layers=6, epochs=500, max_retries=3, error_threshold=1
         # Inizializza la classe VQE (assumendo che accetti k, h e n_layers)
         vqe = VQE(num_qubits, n_layers=n_layers, k=k, h=h, shots=None)
         # Addestra il VQE
-        best_energy, _, _, energy_history, _ = vqe.train_VQE(epochs=epochs, non_zero_state=True)
+        best_energy, _, _, energy_history, _ = vqe.train_VQE(epochs=epochs, non_zero_state=False)
               
         # Calculate run error
         run_error = abs((best_energy - energy_theoretical) / energy_theoretical) * 100
@@ -139,12 +139,16 @@ def get_vqe_state(k, h, n_layers=6, epochs=500, max_retries=3, error_threshold=1
         if run_error <= error_threshold:
             return state, np.array(energy_history)  # già array NumPy, nessuna conversione ulteriore
         else:
+            if run_error<saved_energy:
+                saved_energy=run_error
+                best_state=state
+                best_energy_energy_history=np.array(energy_history)
             # Retry if error exceeds threshold and retries are available
             if attempt < max_retries - 1:
                 print(f"Run error {run_error:.4f}% > {error_threshold}% threshold for k={k:.3f}, h={h:.3f}. Retrying (attempt {attempt+2}/{max_retries})...")
             else:
                 print(f"Max retries reached for k={k:.3f}, h={h:.3f}. Using best result with error {run_error:.4f}%.")
-                return state, np.array(energy_history)
+                return best_state, best_energy_energy_history
 
 if __name__ == "__main__":
     # Configurazione JAX (importante farlo dentro il main o prima di definire i worker)
@@ -178,7 +182,7 @@ if __name__ == "__main__":
     # 3. Ricostruzione delle matrici dei risultati
     psis = np.empty((len(hs), len(ks), 2**num_qubits), dtype=np.complex128)
     phases = np.empty((len(hs), len(ks)), dtype=int)
-    energy_histories = np.empty((len(hs), len(ks)), dtype=float)
+    energy_histories = np.empty((len(hs), len(ks)), dtype=object)
 
     for y, x, state, phase, energy_history in results:
         psis[y, x] = state
@@ -186,9 +190,6 @@ if __name__ == "__main__":
         energy_histories[y, x] = energy_history
 
     # 4. Salvataggio
-<<<<<<< HEAD:src/VQE_train.py
-    np.savez("../../../vqe_states.npz", psis=psis, ks=ks, hs=hs, phases=phases)
-=======
     np.savez(PROJECT_ROOT / "vqe_states.npz", psis=psis, ks=ks, hs=hs, phases=phases, energy_histories=energy_histories)
->>>>>>> c47cc3749eb1166e5a3423088311dfe8ac6552bc:src/vqe_and_search/VQE_train.py
+
     print("Calcolo completato e stati salvati.")
